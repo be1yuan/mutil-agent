@@ -27,6 +27,11 @@ export class ExecError extends Error {
 /**
  * Execute a command safely using spawn with argument array.
  * Never use shell: true to prevent command injection.
+ *
+ * Ensures child process is cleaned up on:
+ * - spawn errors (e.g. command not found)
+ * - timeouts (killed after timeout ms)
+ * - parent promise rejection
  */
 export function safeExec(
   command: string,
@@ -41,6 +46,7 @@ export function safeExec(
   }
 
   return new Promise((resolve, reject) => {
+    let settled = false;
     const child = spawn(command, args, {
       cwd: options.cwd,
       env: options.env,
@@ -51,6 +57,12 @@ export function safeExec(
     let stdout = "";
     let stderr = "";
 
+    const cleanup = () => {
+      if (!child.killed) {
+        try { child.kill("SIGTERM"); } catch { /* already exited */ }
+      }
+    };
+
     child.stdout?.on("data", (data: Buffer) => {
       stdout += data.toString("utf-8");
     });
@@ -60,12 +72,33 @@ export function safeExec(
     });
 
     child.on("close", (code) => {
-      resolve({ code, stdout, stderr });
+      if (!settled) {
+        settled = true;
+        resolve({ code, stdout, stderr });
+      }
     });
 
     child.on("error", (err) => {
-      reject(err);
+      if (!settled) {
+        settled = true;
+        cleanup();
+        reject(err);
+      }
     });
+
+    // Handle timeout: Node's spawn `timeout` option sends SIGTERM,
+    // but we also guard with a race to ensure cleanup.
+    const timeoutMs = options.timeout ?? 30_000;
+    const timer = setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        cleanup();
+        resolve({ code: null, stdout: stdout || "", stderr: stderr + "\n[timeout] process killed after " + timeoutMs + "ms" });
+      }
+    }, timeoutMs + 1000); // 1s grace after Node's built-in timeout
+
+    // Clear timer when process exits naturally
+    child.on("close", () => clearTimeout(timer));
   });
 }
 

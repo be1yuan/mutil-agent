@@ -18,6 +18,20 @@ import type { ModelProvider } from "../types/core.js";
 // ── Message format conversion ──
 
 /**
+ * Check if a message is a ToolResult (user message containing tool_result blocks).
+ * Uses structural typing instead of `as` casts.
+ */
+function isToolResult(msg: Message | ToolResult): msg is ToolResult {
+  return (
+    msg.role === "user" &&
+    "content" in msg &&
+    Array.isArray(msg.content) &&
+    msg.content.length > 0 &&
+    "tool_use_id" in msg.content[0]
+  );
+}
+
+/**
  * Convert our internal (Message | ToolResult)[] to Anthropic SDK format.
  * The key invariant: user/assistant must alternate; tool results are user messages
  * with tool_result blocks.
@@ -28,11 +42,11 @@ function toAnthropicMessages(
   const result: Anthropic.Messages.MessageParam[] = [];
 
   for (const msg of messages) {
-    if (msg.role === "user" && "content" in msg && Array.isArray(msg.content) && msg.content.length > 0 && (msg.content as unknown as { type: string }[])[0]?.type === "tool_result") {
+    if (isToolResult(msg)) {
       // Tool result — special user message
       result.push({
         role: "user",
-        content: (msg as ToolResult).content.map((b) => ({
+        content: msg.content.map((b) => ({
           type: "tool_result" as const,
           tool_use_id: b.tool_use_id,
           content: b.content,
@@ -42,7 +56,14 @@ function toAnthropicMessages(
       // Regular user message
       result.push({
         role: "user",
-        content: typeof msg.content === "string" ? msg.content : msg.content as Anthropic.TextBlockParam[],
+        content: typeof msg.content === "string"
+          ? msg.content
+          : Array.isArray(msg.content)
+            ? msg.content.map((b) => {
+                if ("text" in b) return { type: "text" as const, text: b.text };
+                return { type: "tool_result" as const, tool_use_id: b.tool_use_id, content: b.content };
+              })
+            : String(msg.content),
       });
     } else if (msg.role === "assistant") {
       // Assistant message
@@ -50,12 +71,14 @@ function toAnthropicMessages(
         role: "assistant",
         content: typeof msg.content === "string"
           ? msg.content
-          : (msg.content as ContentBlock[]).map((b) => {
-              if (b.type === "tool_use") {
-                return { type: "tool_use" as const, id: b.id, name: b.name, input: b.input };
-              }
-              return { type: "text" as const, text: b.text };
-            }),
+          : Array.isArray(msg.content)
+            ? msg.content.map((b) => {
+                if (b.type === "tool_use") {
+                  return { type: "tool_use" as const, id: b.id, name: b.name, input: b.input };
+                }
+                return { type: "text" as const, text: b.text };
+              })
+            : String(msg.content),
       });
     }
   }

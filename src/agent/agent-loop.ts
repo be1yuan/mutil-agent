@@ -17,6 +17,7 @@ import type { ConcurrencyLimiter } from "./concurrency-limiter.js";
 import type { FallbackExecutor } from "../adapters/fallback-executor.js";
 import { AdapterSelector } from "./adapter-selector.js";
 import { getAllowedTools, buildTaskTool } from "./tools.js";
+import { executeTool } from "./tool-executor.js";
 import { getLogger } from "../observability/logger.js";
 
 // ── Agent loop ──
@@ -32,6 +33,7 @@ export interface AgentLoopDeps {
   /** List of available agent types (for dynamic task tool enum) */
   agentTypes?: string[];
   onApprovalRequest?: (request: ApprovalRequest) => Promise<boolean>;
+  workspaceDir: string;
 }
 
 export interface ApprovalRequest {
@@ -234,12 +236,12 @@ export class AgentLoop {
       return await this.spawnSubAgent(tc.arguments as unknown as SubAgentArgs, definition);
     }
 
-    // Other tools: execute directly (placeholder — real implementation in v0.2)
+    // Other tools: execute directly
     logger.info("agent.tool.executed", {
       agentType: definition.agentType,
       tool: tc.name,
     });
-    return `[executed] ${tc.name}: ${JSON.stringify(tc.arguments)}`;
+    return await executeTool(tc.name, tc.arguments, this.deps.workspaceDir);
   }
 
   private async requestApproval(

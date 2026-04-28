@@ -77,6 +77,8 @@ class Orchestrator {
 
     const budget = options.budget ?? this.config.budget.maxDollars;
 
+    const workspaceDir = path.dirname(path.resolve(this.configPath));
+
     const deps = {
       adapterSelector: new AdapterSelector(),
       permissionResolver: new PermissionResolver(this.config.security.requireApproval),
@@ -95,6 +97,7 @@ class Orchestrator {
         this.logger.info("agent.approval.auto", { tool: req.toolName, agentType: req.agentType });
         return true;
       },
+      workspaceDir,
     };
 
     const loop = new AgentLoop(deps);

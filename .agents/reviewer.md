@@ -1,6 +1,6 @@
 ---
 agentType: reviewer
-model: deepseek-chat
+model: deepseek-v4-pro
 provider: deepseek
 description: Agent specialized in code review and quality analysis
 maxSteps: 30

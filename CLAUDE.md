@@ -2,52 +2,59 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Project Overview
+## Commands
 
-Multi-Agent Orchestrator — a multi-model agent orchestration layer that supports heterogeneous LLM providers (DeepSeek, Kimi, GLM, MiniMax) through a unified Coordinator pattern. Currently in **design phase** — the repository contains only specification documents (DESIGN.md series), no implementation code yet.
-
-## Design Documents (read in order)
-
-- `DESIGN.md` — Original design: full Claude Code-inspired Coordinator Mode with 4-phase workflow, all 4 model adapters, file-mailbox + HTTP comms, delegation-chain permissions, aggressive 2-week MVP estimate
-- `DESIGN-v2.md` — Correction pass: removes leaked-source references, fixes incorrect model data (context windows, pricing), simplifies MVP scope (2 models only), adds test strategy, adjusts timeline to 4–6 weeks
-- `DESIGN-v3.md` — Refinement: replaces deprecated OpenAI Swarm with Agents SDK, adds Kimi Anthropic-compatible endpoints, Moonshot dual-region (cn/ai) handling, fixes AgentInstance type bug, expands i18n coverage in ComplexityEvaluator
-- `DESIGN-v4.md` — Safety & production hardening: adds FallbackExecutor (retry + exponential backoff + cross-model failover), Mutex-guarded WorktreeManager, CostTracker, Zod config validation, event-driven PermissionManager, proper cleanup/queue lifecycle handling, timeline adjusted to 5–7 weeks
-
-## Target Architecture
-
-```
-Orchestrator
-├── Task Parser → Complexity Evaluator → Simple (single model) / Complex (parallel workers)
-├── Adapters (ModelAdapter interface)
-│   ├── DeepSeekAdapter (OpenAI + Anthropic-compatible API)
-│   ├── KimiAdapter (dual-region cn/ai, OpenAI + Anthropic)
-│   ├── GLMAdapter (OpenAI format)
-│   └── MiniMaxAdapter (OpenAI format)
-├── Communication (MemoryQueue primary, FileMailbox secondary, HTTPBridge deferred)
-├── Security (PermissionManager allowlist, safeExec with spawn+args, path traversal protection)
-├── Lifecycle (AgentRunner with heartbeat + timeout, WorktreeManager with Mutex)
-└── Observability (structured logging, Prometheus metrics, OpenTelemetry tracing, CostTracker)
+```bash
+npm install              # Install dependencies (Node >=20)
+npm run build            # Compile TypeScript (tsc)
+npm run dev              # Run via tsx (e.g., npm run dev run "task" --agent main)
+npm run dev run "task"   # Execute a task (add --agent <type>, --budget <n>)
+npm run dev list-agents  # List available agent definitions
+npm run dev validate     # Validate orchestrator.yaml + .agents/*.md
+npm test                 # Run tests (vitest run)
+npm run test:watch       # Run tests in watch mode
+npm run typecheck        # Type-check without emitting (tsc --noEmit)
 ```
 
-## Key Design Decisions (from v4)
+## Architecture
 
-- **Language**: TypeScript/Node.js (OpenAI-compatible API format as baseline; Anthropic-compatible for DeepSeek/Kimi where supported)
-- **MVP scope** (5–7 weeks): DeepSeek V4-Pro + Kimi K2.6 only, in-memory queue, allowlist permissions, spawn+args security, retry+fallback, budget cap, Zod config validation
-- **Dynamic complexity evaluation**: heuristic patterns for simple tasks; model-assisted assessment only for complex ones
-- **No delegation-chain permissions**: flat allowlist per agent type; dangerous operations (file.delete, bash.exec, git.push) require human approval via injected callback
-- **Git Worktree isolation**: Mutex-serialized to prevent concurrent git conflicts
-- **Claude Code bridge**: CLI subcommand (`execute --task ... --format anthropic`) callable via Bash tool; programmatic bridge class available
+### Layered structure (bottom-up)
 
-## What This Repository Contains
+```
+src/types/core.ts          — ModelProvider, Usage, AgentResult (zero deps)
+src/adapters/types.ts      — ModelAdapter interface, ChatParams/Response, tools, sub-agent types
+src/agent/types.ts         — AgentDefinition, Permission, BashPermission
+src/config/types.ts        — OrchestratorConfig, Zod schemas
 
-- `DESIGN.md` → `DESIGN-v4.md`: Iterative design specifications (no implementation code yet)
-- `.workbuddy/memory/MEMORY.md`: Workbuddy memory index (project-internal tooling)
+src/adapters/anthropic-client.ts   — DeepSeekAdapter + GLMAdapter via Anthropic SDK (shared codegen)
+src/adapters/fallback-executor.ts  — Retry + exponential backoff + cross-model failover
+src/agent/adapter-selector.ts      — Chooses model provider per task (agent config or default deepseek)
+src/agent/agent-loop.ts            — Core execution loop: chat → tools → repeat until done/maxSteps
+src/agent/tools.ts                 — Built-in tool definitions + task tool for sub-agent spawning
+src/agent/concurrency-limiter.ts   — Semaphore limiting concurrent sub-agent spawns
+src/security/permission-resolver.ts— allow/ask/deny with Bash glob matching, global baseline overrides
+src/security/safe-exec.ts          — spawn-based execution (never shell:true), path traversal guard
+src/config/loader.ts               — YAML config (with env var substitution) + Markdown agent loader
+src/config/validator.ts            — Zod validation with defaults
+src/observability/cost-tracker.ts  — Per-call cost accounting, 80% budget warning
+src/observability/logger.ts        — Winston JSON logger (console + file)
+src/cli/main.ts                    — Orchestrator class + Commander CLI (run/list-agents/validate)
+```
 
-## When Implementing
+### Key design decisions
 
-- Start with: `src/adapters/base-adapter.ts` (ModelAdapter interface), `src/adapters/deepseek-adapter.ts`, `src/adapters/kimi-adapter.ts`
-- Config validation first: `src/config/validator.ts` (Zod schema) — catches misconfiguration at startup
-- Then core: `src/core/complexity-evaluator.ts`, `src/coordinator/`, `src/communication/memory-queue.ts`
-- Security: `src/security/safe-exec.ts`, `src/security/path-utils.ts` — wire into lifecycle
-- Use `src/adapters/fallback-executor.ts` to wrap all model calls
-- Observability (`src/observability/`) can be scaffolded early but wired last
+- **No separate orchestrator** — each Agent runs an embedded loop; orchestration happens via the `task` tool spawning sub-agents within the same process
+- **Model provider = Anthropic-compatible HTTP endpoints** — DeepSeek and GLM use the same `@anthropic-ai/sdk` client, differentiated only by baseURL
+- **Permissions are scoped per agent definition** — `.agents/*.md` frontmatter declares per-tool allow/ask/deny; Bash permissions use glob patterns; global `requireApproval` in `orchestrator.yaml` is a security baseline that can only make permissions stricter
+- **Sub-agents share parent's CostTracker** — costs from sub-agent model calls decrement the same budget pool; concurrency is limited by semaphore (`maxConcurrentAgents`)
+- **Fallback chain**: primary model retries (max 3, exponential backoff) → cross-model switch (e.g. DeepSeek → GLM) → throw `ModelUnavailableError`
+
+### Agent definition format (Markdown + YAML frontmatter)
+
+Files in `.agents/*.md` have frontmatter fields: `agentType`, `model`, `provider` (optional), `maxSteps`, `timeout`, `tools` (map of tool name → `allow|ask|deny` or `{allow, ask, deny}` for Bash globs), and the body text becomes `systemPrompt`.
+
+### What's implemented vs pending
+
+Implemented: agent loop, DeepSeek/GLM adapters, config loading/validation, permission engine, fallback executor, budget tracking, concurrency control, structured logging, CLI.
+
+Pending (v0.2): actual tool execution logic (Read/Write/Edit/Bash/Grep/Glob are stubs that return `[executed]`), streaming responses, git worktree isolation, test suite.

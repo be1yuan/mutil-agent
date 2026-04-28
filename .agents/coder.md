@@ -1,7 +1,7 @@
 ---
 agentType: coder
-model: deepseek-chat
-provider: deepseek
+model: GLM-4.7
+provider: zhipu
 description: Agent specialized in writing and modifying code
 maxSteps: 50
 timeout: 300000

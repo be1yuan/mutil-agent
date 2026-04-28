@@ -1,6 +1,6 @@
 ---
 agentType: explore
-model: deepseek-chat
+model: deepseek-v4-flash
 provider: deepseek
 description: Read-only agent for codebase exploration and analysis
 maxSteps: 30

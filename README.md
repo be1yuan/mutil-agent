@@ -41,7 +41,7 @@ Agent 使用 `.agents/` 目录下的 Markdown 文件定义，带 YAML frontmatte
 ```markdown
 ---
 agentType: coder
-model: deepseek-chat
+model: deepseek-v4-pro
 provider: deepseek
 maxSteps: 50
 timeout: 300000

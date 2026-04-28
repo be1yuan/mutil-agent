@@ -5,9 +5,45 @@ import matter from "gray-matter";
 import type { OrchestratorConfig } from "./types.js";
 import type { AgentDefinition } from "../agent/types.js";
 
+// ── .env file loader ──
+
+/**
+ * Load a .env file and populate process.env.
+ * Format: KEY=VALUE per line, # for comments, empty lines ignored.
+ * Does NOT override existing env vars (env vars take precedence).
+ */
+async function loadDotEnv(configPath: string): Promise<void> {
+  const configDir = path.dirname(path.resolve(configPath));
+  const envPath = path.join(configDir, ".env");
+
+  try {
+    const raw = await fs.readFile(envPath, "utf-8");
+    for (const line of raw.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#")) continue;
+
+      const eqIndex = trimmed.indexOf("=");
+      if (eqIndex === -1) continue;
+
+      const key = trimmed.slice(0, eqIndex).trim();
+      const value = trimmed.slice(eqIndex + 1).trim();
+
+      // Don't override existing env vars
+      if (!(key in process.env)) {
+        process.env[key] = value;
+      }
+    }
+  } catch {
+    // .env file doesn't exist — that's fine
+  }
+}
+
 // ── YAML config loader ──
 
 export async function loadConfig(configPath: string): Promise<OrchestratorConfig> {
+  // Load .env first (before reading config, so vars are available for substitution)
+  await loadDotEnv(configPath);
+
   const raw = await fs.readFile(configPath, "utf-8");
   // Simple env substitution: ${VAR} or ${VAR:-default}
   const substituted = raw.replace(/\$\{(\w+)(?::-([^}]+))?\}/g, (_match, varName, defaultValue) => {

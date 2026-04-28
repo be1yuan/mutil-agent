@@ -1,6 +1,6 @@
 ---
 agentType: main
-model: deepseek-chat
+model: deepseek-v4-pro
 provider: deepseek
 description: General-purpose agent that can plan, code, and delegate subtasks
 maxSteps: 50

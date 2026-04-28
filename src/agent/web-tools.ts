@@ -43,40 +43,48 @@ const SEARCH_DELAY_MS = 1200; // delay between consecutive searches
 // ── Cache ──
 
 const searchCache = new Map<string, CacheEntry>();
+const fetchCache = new Map<string, CacheEntry>();
 
-function getCached(query: string): string | undefined {
-  const normalized = normalizeQuery(query);
-  const entry = searchCache.get(normalized);
+/** Clear all caches and reset the search queue (for testing) */
+export function clearSearchCache(): void {
+  searchCache.clear();
+  fetchCache.clear();
+  searchQueue = IDLE;
+}
+
+function getCached(cache: Map<string, CacheEntry>, key: string): string | undefined {
+  const normalized = normalizeQuery(key);
+  const entry = cache.get(normalized);
   if (!entry) return undefined;
   if (Date.now() - entry.timestamp > CACHE_TTL_MS) {
-    searchCache.delete(normalized);
+    cache.delete(normalized);
     return undefined;
   }
   return entry.result;
 }
 
-function setCached(query: string, result: string): void {
-  const normalized = normalizeQuery(query);
+function setCached(cache: Map<string, CacheEntry>, key: string, result: string): void {
+  const normalized = normalizeQuery(key);
   // TTL GC: evict expired entries
   const now = Date.now();
-  for (const [k, v] of searchCache) {
+  for (const [k, v] of cache) {
     if (now - v.timestamp > CACHE_TTL_MS) {
-      searchCache.delete(k);
+      cache.delete(k);
     }
   }
   // Capacity GC: evict oldest if at limit
-  if (searchCache.size >= CACHE_MAX_SIZE) {
+  if (cache.size >= CACHE_MAX_SIZE) {
     let oldestKey = "";
     let oldestTime = Infinity;
-    for (const [k, v] of searchCache) {
+    for (const [k, v] of cache) {
       if (v.timestamp < oldestTime) {
         oldestTime = v.timestamp;
         oldestKey = k;
       }
     }
-    if (oldestKey) searchCache.delete(oldestKey);
+    if (oldestKey) cache.delete(oldestKey);
   }
-  searchCache.set(normalized, { result, timestamp: now });
+  cache.set(normalized, { result, timestamp: now });
 }
 
 function normalizeQuery(q: string): string {
@@ -85,10 +93,16 @@ function normalizeQuery(q: string): string {
 
 // ── Serialised search queue ──
 
-let searchQueue: Promise<unknown> = Promise.resolve();
+const IDLE = Promise.resolve();
+let searchQueue: Promise<unknown> = IDLE;
 
 function enqueueSearch<T>(fn: () => Promise<T>): Promise<T> {
-  const p = searchQueue.then(() => delay(SEARCH_DELAY_MS)).then(fn);
+  // Only delay if there's a pending search in the queue.
+  // The first request executes immediately.
+  const hasPending = searchQueue !== IDLE;
+  const p = searchQueue
+    .then(() => { if (hasPending) return delay(SEARCH_DELAY_MS); })
+    .then(fn);
   searchQueue = p.catch(() => undefined);
   return p;
 }
@@ -214,7 +228,7 @@ export async function webSearch(
   }
 
   // Check cache
-  const cached = getCached(query);
+  const cached = getCached(searchCache, query);
   if (cached) {
     return `[cached] ${cached}`;
   }
@@ -252,7 +266,7 @@ export async function webSearch(
     }
 
     const output = formatSearchResults(query, results);
-    setCached(query, output);
+    setCached(searchCache, query, output);
     return output;
   });
 }
@@ -267,21 +281,29 @@ function parseDuckDuckGoResults(html: string): SearchResult[] {
   const results: SearchResult[] = [];
 
   // DuckDuckGo HTML result structure (as of 2024-2025):
-  // Each result is in a <div class="result"> containing:
+  // Each result has:
   //   <a class="result__a" href="...">title</a>
-  //   <a class="result__url" href="...">display url</a>
   //   <div class="result__snippet">snippet text</div>
+  //
+  // Strategy: Don't try to match the outer <div class="result"> block —
+  // its nesting depth varies and regex can't count. Instead, find all
+  // .result__a links and pair each with the nearest .result__snippet
+  // that follows it in the HTML.
 
-  const resultRegex = /<div class="result[^"]*"[^>]*>[\s\S]*?<\/div>\s*<\/div>/gi;
-  const matches = html.match(resultRegex) ?? [];
+  const linkRegex = /<a[^>]*class=["']result__a["'][^>]*href=["']([^"']*)["'][^>]*>([\s\S]*?)<\/a>/gi;
+  const linkMatches = [...html.matchAll(linkRegex)];
 
-  for (const block of matches.slice(0, 10)) {
-    const titleMatch = block.match(/<a[^>]*class="result__a"[^>]*>([\s\S]*?)<\/a>/i);
-    const urlMatch = block.match(/<a[^>]*class="result__a"[^>]*href="([^"]*)"/i);
-    const snippetMatch = block.match(/<div[^>]*class="result__snippet"[^>]*>([\s\S]*?)<\/div>/i);
+  for (let i = 0; i < Math.min(linkMatches.length, 10); i++) {
+    const m = linkMatches[i];
+    const rawUrl = m[1];
+    const title = stripHtml(m[2]);
 
-    const title = titleMatch ? stripHtml(titleMatch[1]) : "";
-    const url = urlMatch ? decodeURIComponent(urlMatch[1]) : "";
+    // Resolve DDG redirect URL: /l/?kh=-1&uddg=https%3A%2F%2F...
+    const url = resolveDdgUrl(rawUrl);
+
+    // Find snippet: search for the nearest .result__snippet after this link
+    const afterLink = html.slice(m.index! + m[0].length);
+    const snippetMatch = afterLink.match(/^[\s\S]*?<div[^>]*class=["']result__snippet["'][^>]*>([\s\S]*?)<\/div>/i);
     const snippet = snippetMatch ? stripHtml(snippetMatch[1]) : "";
 
     if (title && url) {
@@ -290,6 +312,34 @@ function parseDuckDuckGoResults(html: string): SearchResult[] {
   }
 
   return results;
+}
+
+/**
+ * Resolve a DuckDuckGo redirect URL to the actual target URL.
+ *
+ * DDG wraps external links in /l/?kh=-1&uddg=<encoded-url> format.
+ * This function extracts the uddg parameter; if the URL doesn't look
+ * like a DDG redirect, it's returned as-is.
+ */
+function resolveDdgUrl(rawUrl: string): string {
+  // DDG redirect pattern: /l/?...&uddg=<encoded-url>
+  if (rawUrl.startsWith("/l/") || rawUrl.includes("uddg=")) {
+    const uddgMatch = rawUrl.match(/uddg=([^&]+)/);
+    if (uddgMatch) {
+      try {
+        return decodeURIComponent(uddgMatch[1]);
+      } catch {
+        // Malformed encoding — fall through to raw URL
+      }
+    }
+  }
+
+  // Not a redirect, or redirect parsing failed — decode normally
+  try {
+    return decodeURIComponent(rawUrl);
+  } catch {
+    return rawUrl;
+  }
 }
 
 function stripHtml(html: string): string {
@@ -336,6 +386,12 @@ export async function webFetch(
     return `[webfetch error] URL validation failed: ${msg}`;
   }
 
+  // Check cache
+  const cached = getCached(fetchCache, validatedUrl);
+  if (cached) {
+    return `[cached] ${cached}`;
+  }
+
   const fetchFn = options.fetch ?? globalThis.fetch;
 
   let response: Response;
@@ -379,6 +435,7 @@ export async function webFetch(
     content.length > 8000 ? `\n... (${content.length - 8000} more chars)` : "",
   ].join("\n");
 
+  setCached(fetchCache, validatedUrl, output);
   return output;
 }
 

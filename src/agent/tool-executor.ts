@@ -35,6 +35,8 @@ export async function executeTool(
 
 // ── Read ──
 
+const MAX_READ_SIZE = 100_000; // ~100KB
+
 async function executeRead(
   args: Record<string, unknown>,
   workspaceDir: string
@@ -42,6 +44,9 @@ async function executeRead(
   const filePath = safeResolve(workspaceDir, String(args.filePath));
   try {
     const content = await readFile(filePath, "utf-8");
+    if (content.length > MAX_READ_SIZE) {
+      return content.slice(0, MAX_READ_SIZE) + `\n... (truncated, ${content.length - MAX_READ_SIZE} more chars)`;
+    }
     return content;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -88,6 +93,8 @@ async function executeEdit(
 
 // ── Bash ──
 
+const MAX_OUTPUT_SIZE = 50_000; // ~50KB
+
 async function executeBash(
   args: Record<string, unknown>,
   workspaceDir: string
@@ -104,7 +111,11 @@ async function executeBash(
     if (result.stdout) parts.push(result.stdout.trimEnd());
     if (result.stderr) parts.push(`[stderr]\n${result.stderr.trimEnd()}`);
     if (!result.stdout && !result.stderr) parts.push(`(exit ${result.code})`);
-    return parts.join("\n") || `(exit ${result.code})`;
+    let output = parts.join("\n") || `(exit ${result.code})`;
+    if (output.length > MAX_OUTPUT_SIZE) {
+      output = output.slice(0, MAX_OUTPUT_SIZE) + `\n... (truncated, ${output.length - MAX_OUTPUT_SIZE} more chars)`;
+    }
+    return output;
   } catch (err) {
     return `[bash error] ${err instanceof Error ? err.message : String(err)}`;
   }
@@ -188,14 +199,34 @@ async function collectFiles(root: string): Promise<string[]> {
 
   const result: string[] = [];
   try {
-    const entries = await readdir(root, { recursive: true, withFileTypes: true });
-    for (const e of entries) {
-      if (!e.isFile()) continue;
-      if (SKIP_DIRS.some((d) => e.parentPath?.includes(d))) continue;
-      result.push(resolve(e.parentPath ?? root, e.name));
+    for await (const f of walkDir(root)) {
+      result.push(f);
     }
   } catch {
     // ignore permission errors
   }
   return result;
+}
+
+/**
+ * Recursive directory walker that prunes SKIP_DIRS at traversal time.
+ * This avoids loading the entire directory tree into memory before filtering.
+ */
+async function* walkDir(dir: string): AsyncGenerator<string> {
+  let entries;
+  try {
+    entries = await readdir(dir, { withFileTypes: true });
+  } catch {
+    return; // permission denied — skip
+  }
+  for (const e of entries) {
+    const fullPath = resolve(dir, e.name);
+    if (e.isDirectory()) {
+      // Prune: skip known noise directories by exact name match
+      if (SKIP_DIRS.includes(e.name)) continue;
+      yield* walkDir(fullPath);
+    } else if (e.isFile()) {
+      yield fullPath;
+    }
+  }
 }

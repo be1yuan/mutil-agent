@@ -14,6 +14,7 @@ import type {
   ContentBlock,
 } from "./types.js";
 import type { ModelProvider } from "../types/core.js";
+import { getLogger } from "../observability/logger.js";
 
 // ── Message format conversion ──
 
@@ -143,24 +144,22 @@ class BaseAnthropicAdapter implements ModelAdapter {
   }
 
   async chat(params: ChatParams): Promise<ChatResponse> {
-    const response = await this.client.messages.create({
-      model: params.model,
-      messages: toAnthropicMessages(params.messages),
-      system: params.system,
-      tools: params.tools?.map((t) => ({
-        name: t.name,
-        description: t.description,
-        input_schema: t.parameters as Anthropic.Messages.Tool.InputSchema,
-      })),
-      temperature: params.temperature,
-      max_tokens: params.maxTokens ?? 4096,
-    });
+    // Streaming mode: consume the stream internally, emit text deltas
+    // via callback, but still return a complete ChatResponse.
+    if (params.stream) {
+      return this.chatViaStream(params);
+    }
 
+    // Non-streaming mode (original path)
+    const response = await this.client.messages.create(this.buildRequestParams(params));
     return normalizeResponse(response, this.provider);
   }
 
-  async *chatStream(params: ChatParams): AsyncIterable<ChatStreamChunk> {
-    const stream = this.client.messages.stream({
+  /**
+   * Build Anthropic SDK request params from our ChatParams.
+   */
+  private buildRequestParams(params: ChatParams): Anthropic.Messages.MessageCreateParams {
+    return {
       model: params.model,
       system: params.system,
       messages: toAnthropicMessages(params.messages),
@@ -171,22 +170,135 @@ class BaseAnthropicAdapter implements ModelAdapter {
       })),
       temperature: params.temperature,
       max_tokens: params.maxTokens ?? 4096,
-    });
+    };
+  }
+
+  /**
+   * Streaming implementation: uses the Anthropic streaming API internally,
+   * emits text deltas via the onTextDelta callback, and accumulates a
+   * complete ChatResponse for the caller.
+   */
+  private async chatViaStream(params: ChatParams): Promise<ChatResponse> {
+    const textParts: string[] = [];
+    const toolCalls: { id: string; name: string; inputJson: string }[] = [];
+    let currentToolCall: { id: string; name: string; inputJson: string } | null = null;
+
+    const stream = this.client.messages.stream(this.buildRequestParams(params));
 
     for await (const event of stream) {
-      if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
-        yield { content: event.delta.text };
+      if (event.type === "content_block_start") {
+        const block = event.content_block as { type: string; id?: string; name?: string };
+        if (block.type === "tool_use" && block.id && block.name) {
+          currentToolCall = { id: block.id, name: block.name, inputJson: "" };
+        }
+      } else if (event.type === "content_block_delta") {
+        const delta = event.delta as { type: string; text?: string; partial_json?: string };
+        if (delta.type === "text_delta" && delta.text) {
+          textParts.push(delta.text);
+          params.onTextDelta?.(delta.text);
+        } else if (delta.type === "input_json_delta" && delta.partial_json && currentToolCall) {
+          currentToolCall.inputJson += delta.partial_json;
+        }
+      } else if (event.type === "content_block_stop") {
+        if (currentToolCall) {
+          toolCalls.push(currentToolCall);
+          currentToolCall = null;
+        }
+      }
+    }
+
+    // Get final message for usage and stop reason
+    let finalMessage: Anthropic.Messages.Message;
+    try {
+      finalMessage = await stream.finalMessage();
+    } catch (finalErr) {
+      const logger = getLogger();
+      logger.error("adapter.stream_final_message_failed", {
+        provider: this.provider,
+        error: finalErr instanceof Error ? finalErr.message : String(finalErr),
+      });
+      // Stream was interrupted — return what we have so far
+      return {
+        content: textParts.length > 0 ? textParts.join("") : null,
+        toolCalls: [], // Can't safely parse without final message
+        usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 },
+        stopReason: { type: "max_tokens" },
+      };
+    }
+
+    // Parse tool call arguments safely
+    const parsedToolCalls: ChatResponse["toolCalls"] = [];
+    for (const tc of toolCalls) {
+      try {
+        parsedToolCalls.push({
+          id: tc.id,
+          name: tc.name,
+          arguments: tc.inputJson ? JSON.parse(tc.inputJson) : {},
+        });
+      } catch (parseErr) {
+        const logger = getLogger();
+        logger.warn("adapter.tool_parse_failed", {
+          provider: this.provider,
+          toolName: tc.name,
+          rawJson: tc.inputJson.slice(0, 500),
+          error: parseErr instanceof Error ? parseErr.message : String(parseErr),
+        });
+        parsedToolCalls.push({
+          id: tc.id,
+          name: tc.name,
+          arguments: { _raw: tc.inputJson, _parseError: String(parseErr) },
+        });
+      }
+    }
+
+    return {
+      content: textParts.length > 0 ? textParts.join("") : null,
+      toolCalls: parsedToolCalls,
+      usage: {
+        inputTokens: finalMessage.usage.input_tokens,
+        outputTokens: finalMessage.usage.output_tokens,
+        cacheReadTokens: finalMessage.usage.cache_read_input_tokens ?? 0,
+        cacheWriteTokens: finalMessage.usage.cache_creation_input_tokens ?? 0,
+      },
+      stopReason: { type: finalMessage.stop_reason as ChatResponse["stopReason"]["type"] },
+    };
+  }
+
+  /**
+   * Public streaming API: yields ChatStreamChunk objects.
+   * Handles both text deltas and tool_use blocks.
+   */
+  async *chatStream(params: ChatParams): AsyncIterable<ChatStreamChunk> {
+    const stream = this.client.messages.stream(this.buildRequestParams(params));
+
+    for await (const event of stream) {
+      if (event.type === "content_block_delta") {
+        const delta = event.delta as { type: string; text?: string; partial_json?: string };
+        if (delta.type === "text_delta" && delta.text) {
+          yield { content: delta.text };
+        }
       } else if (event.type === "message_stop") {
         const msg = await stream.finalMessage();
+        const toolCalls: ChatResponse["toolCalls"] = [];
+        for (const block of msg.content) {
+          if (block.type === "tool_use") {
+            toolCalls.push({
+              id: block.id,
+              name: block.name,
+              arguments: block.input as Record<string, unknown>,
+            });
+          }
+        }
         yield {
           content: undefined,
           usage: {
             inputTokens: msg.usage.input_tokens,
             outputTokens: msg.usage.output_tokens,
-            cacheReadTokens: 0,
-            cacheWriteTokens: 0,
+            cacheReadTokens: msg.usage.cache_read_input_tokens ?? 0,
+            cacheWriteTokens: msg.usage.cache_creation_input_tokens ?? 0,
           },
           stopReason: { type: msg.stop_reason as ChatResponse["stopReason"]["type"] },
+          toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
         };
       }
     }

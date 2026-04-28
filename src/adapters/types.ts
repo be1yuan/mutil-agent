@@ -62,6 +62,10 @@ export interface ChatParams {
   tools?: ToolDefinition[];
   temperature?: number;
   maxTokens?: number;
+  /** If true, use streaming API internally but still return a complete ChatResponse */
+  stream?: boolean;
+  /** Callback for real-time text output when streaming */
+  onTextDelta?: (text: string) => void;
 }
 
 export interface ChatResponse {
@@ -74,6 +78,8 @@ export interface ChatResponse {
 export interface ChatStreamChunk {
   content?: string;
   toolCall?: Partial<ToolCall>;
+  /** Full tool calls list (available in message_stop chunk) */
+  toolCalls?: ToolCall[];
   usage?: Usage;
   stopReason?: StopReason;
 }

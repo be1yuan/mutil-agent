@@ -19,6 +19,7 @@ import { AdapterSelector } from "./adapter-selector.js";
 import { getAllowedTools, buildTaskTool } from "./tools.js";
 import { executeTool } from "./tool-executor.js";
 import { getLogger } from "../observability/logger.js";
+import { acquireWorktree, resolveIsolation } from "./worktree-manager.js";
 
 // ── Agent loop ──
 
@@ -34,6 +35,8 @@ export interface AgentLoopDeps {
   agentTypes?: string[];
   onApprovalRequest?: (request: ApprovalRequest) => Promise<boolean>;
   workspaceDir: string;
+  /** If provided, agent will use streaming API and emit text deltas here */
+  onStreamText?: (text: string) => void;
 }
 
 export interface ApprovalRequest {
@@ -74,6 +77,8 @@ export class AgentLoop {
         system: definition.systemPrompt,
         messages: history,
         tools: allowedTools,
+        stream: !!this.deps.onStreamText,
+        onTextDelta: this.deps.onStreamText,
       };
 
       let response: ChatResponse;
@@ -281,11 +286,43 @@ export class AgentLoop {
       task: args.task.slice(0, 200),
     });
 
+    // Determine isolation mode
+    const isolation = await resolveIsolation(
+      this.deps.workspaceDir,
+      subDef.isolation
+    );
+
+    // For worktree isolation, create a separate working directory
+    let effectiveWorkspace = this.deps.workspaceDir;
+    let worktreeCleanup: (() => Promise<void>) | undefined;
+
+    if (isolation === "worktree") {
+      try {
+        const handle = await acquireWorktree(
+          this.deps.workspaceDir,
+          args.agentType
+        );
+        effectiveWorkspace = handle.worktreeDir;
+        worktreeCleanup = handle.cleanup;
+      } catch (err) {
+        logger.warn("agent.subagent.worktree_failed", {
+          subAgent: args.agentType,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        // Fallback to context isolation
+      }
+    }
+
     // Acquire concurrency permit
     const release = await this.deps.concurrencyLimiter.acquire();
 
     try {
-      const subLoop = new AgentLoop(this.deps);
+      // Create a modified deps with the worktree workspace
+      const subDeps = effectiveWorkspace === this.deps.workspaceDir
+        ? this.deps
+        : { ...this.deps, workspaceDir: effectiveWorkspace };
+
+      const subLoop = new AgentLoop(subDeps);
       const result = await subLoop.run(
         args.task,
         subDef,
@@ -297,6 +334,7 @@ export class AgentLoop {
         status: result.status,
         steps: result.steps,
         cost: result.cost,
+        isolation,
       });
 
       const subResult: SubAgentResult = {
@@ -309,7 +347,26 @@ export class AgentLoop {
 
       return JSON.stringify(subResult);
     } finally {
-      release();
+      // Always release the concurrency permit and clean up worktree,
+      // even if one of them fails.
+      try {
+        release();
+      } catch (releaseErr) {
+        logger.error("agent.subagent.release_failed", {
+          subAgent: args.agentType,
+          error: releaseErr instanceof Error ? releaseErr.message : String(releaseErr),
+        });
+      }
+      if (worktreeCleanup) {
+        try {
+          await worktreeCleanup();
+        } catch (cleanupErr) {
+          logger.error("agent.subagent.worktree_cleanup_failed", {
+            subAgent: args.agentType,
+            error: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr),
+          });
+        }
+      }
     }
   }
 }

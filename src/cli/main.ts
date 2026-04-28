@@ -11,6 +11,7 @@ import { AdapterSelector } from "../agent/adapter-selector.js";
 import { PermissionResolver } from "../security/permission-resolver.js";
 import { CostTracker } from "../observability/cost-tracker.js";
 import { ConcurrencyLimiter } from "../agent/concurrency-limiter.js";
+import { Committee, type AggregationStrategy } from "../agent/committee.js";
 import { createAppLogger, setLogger } from "../observability/logger.js";
 import type { ModelAdapter } from "../adapters/types.js";
 import type { AgentDefinition } from "../agent/types.js";
@@ -98,6 +99,10 @@ class Orchestrator {
         return true;
       },
       workspaceDir,
+      // Stream text to stdout in real-time
+      onStreamText: (text: string) => {
+        process.stdout.write(text);
+      },
     };
 
     const loop = new AgentLoop(deps);
@@ -115,6 +120,69 @@ class Orchestrator {
     console.log("Available agents:");
     for (const [agentType, def] of this.agentDefinitions) {
       console.log(`  ${agentType}: ${def.description ?? "No description"} (${def.model})`);
+    }
+  }
+
+  async committee(
+    task: string,
+    options: { agents?: string; strategy?: string; budget?: number }
+  ): Promise<void> {
+    const agentTypes = (options.agents ?? "explore,coder,reviewer").split(",");
+    const strategy = (options.strategy ?? "concat") as AggregationStrategy;
+    const budget = options.budget ?? this.config.budget.maxDollars;
+
+    // Validate agent types
+    for (const at of agentTypes) {
+      if (!this.agentDefinitions.has(at.trim())) {
+        console.error(`Agent "${at.trim()}" not found. Available: ${Array.from(this.agentDefinitions.keys()).join(", ")}`);
+        process.exit(1);
+      }
+    }
+
+    const workspaceDir = path.dirname(path.resolve(this.configPath));
+
+    const deps = {
+      adapterSelector: new AdapterSelector(),
+      permissionResolver: new PermissionResolver(this.config.security.requireApproval),
+      costTracker: new CostTracker(budget),
+      concurrencyLimiter: new ConcurrencyLimiter(this.config.security.maxConcurrentAgents),
+      adapters: this.adapters,
+      fallbackExecutor: this.fallbackExecutor,
+      agentTypes: Array.from(this.agentDefinitions.keys()),
+      loadAgentDefinition: (type: string) => {
+        const def = this.agentDefinitions.get(type);
+        if (!def) throw new Error(`Agent "${type}" not found`);
+        return def;
+      },
+      onApprovalRequest: async (req: { agentType: string; toolName: string; arguments: Record<string, unknown> }) => {
+        this.logger.info("agent.approval.auto", { tool: req.toolName, agentType: req.agentType });
+        return true;
+      },
+      workspaceDir,
+      onStreamText: (text: string) => {
+        process.stdout.write(text);
+      },
+    };
+
+    const committee = new Committee(deps);
+    const result = await committee.run(task, {
+      agentTypes: agentTypes.map((a) => a.trim()),
+      strategy,
+    }, budget);
+
+    console.log("\n--- Committee Result ---");
+    console.log(`Status: ${result.status}`);
+    console.log(`Strategy: ${result.strategy}`);
+    console.log(`Members: ${result.members.length}`);
+    console.log(`Total cost: $${result.totalCost.toFixed(4)}`);
+    console.log(`Total steps: ${result.totalSteps}`);
+
+    for (const member of result.members) {
+      console.log(`\n[${member.agentType}] ${member.result.status} (${member.result.steps} steps, $${member.result.cost.toFixed(4)})`);
+    }
+
+    if (result.content) {
+      console.log(`\n--- Aggregated Output ---\n${result.content}`);
     }
   }
 }
@@ -173,6 +241,21 @@ program
       console.error(`Validation failed: ${(error as Error).message}`);
       process.exit(1);
     }
+  });
+
+program
+  .command("committee")
+  .description("Run multiple agents in parallel (Committee mode)")
+  .argument("<task>", "Task description")
+  .option("-c, --config <path>", "Config file path", "orchestrator.yaml")
+  .option("-a, --agents <types>", "Comma-separated agent types", "explore,coder,reviewer")
+  .option("-s, --strategy <strategy>", "Aggregation strategy: concat, majority, best", "concat")
+  .option("-b, --budget <dollars>", "Budget limit in dollars", parseFloat)
+  .action(async (task: string, options: { config: string; agents?: string; strategy?: string; budget?: number }) => {
+    const agentsDir = path.join(path.dirname(options.config), ".agents");
+    const orchestrator = new Orchestrator(options.config, agentsDir);
+    await orchestrator.init();
+    await orchestrator.committee(task, options);
   });
 
 program.parse();

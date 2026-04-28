@@ -41,6 +41,11 @@ export class FallbackExecutor {
         if (!adapter) {
           throw new Error(`No adapter found for provider: ${currentProvider}`);
         }
+        // Streaming params (stream, onTextDelta) are passed through transparently.
+        // The adapter's chat() method handles streaming internally when stream=true.
+        // NOTE: If retry occurs after text deltas have already been emitted,
+        // the caller will see duplicate/interrupted output. This is a known
+        // limitation — streaming + retry doesn't have clean state recovery.
         return await adapter.chat({ ...params, model: currentModel });
       } catch (error) {
         lastError = error as Error;

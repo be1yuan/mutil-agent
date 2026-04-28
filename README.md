@@ -154,9 +154,9 @@ orchestrator.yaml     全局配置
 - [x] 并发控制（信号量）
 - [x] 结构化日志（Winston）
 - [x] CLI 入口（run / list-agents / validate）
-- [ ] 工具实际执行逻辑（Read/Write/Edit/Bash/Grep/Glob）
-- [ ] 测试套件
-- [ ] 流式响应（v0.2）
+- [x] 工具实际执行逻辑（Read/Write/Edit/Bash/Grep/Glob）
+- [x] 测试套件
+- [x] 流式响应（v0.2）
 - [ ] Git worktree 隔离（v0.2）
 
 ## 许可证

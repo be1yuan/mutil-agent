@@ -1,11 +1,12 @@
 # MutilAgentOrchestrator configuration
+# Copy this file to orchestrator.yaml and fill in your API keys
 # All ${ENV_VAR} references are resolved from process.env
 
 providers:
   deepseek:
     apiKey: ${DEEPSEEK_API_KEY}
     baseURL: https://api.deepseek.com/anthropic
-    defaultModel: deepseek-chat
+    defaultModel: deepseek-v4-pro
   zhipu:
     apiKey: ${ZHIPU_API_KEY}
     baseURL: https://open.bigmodel.cn/api/anthropic

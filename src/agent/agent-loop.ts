@@ -237,11 +237,21 @@ export class AgentLoop {
     }
 
     // Other tools: execute directly
-    logger.info("agent.tool.executed", {
-      agentType: definition.agentType,
-      tool: tc.name,
-    });
-    return await executeTool(tc.name, tc.arguments, this.deps.workspaceDir);
+    try {
+      logger.info("agent.tool.executed", {
+        agentType: definition.agentType,
+        tool: tc.name,
+      });
+      return await executeTool(tc.name, tc.arguments, this.deps.workspaceDir);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.error("agent.tool.error", {
+        agentType: definition.agentType,
+        tool: tc.name,
+        error: msg,
+      });
+      return `[tool error] ${tc.name}: ${msg}`;
+    }
   }
 
   private async requestApproval(

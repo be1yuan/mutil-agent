@@ -76,12 +76,25 @@ import path from "node:path";
 /**
  * Resolve a path safely within a base directory.
  * Throws if the resolved path escapes the base directory.
+ *
+ * Handles common Agent path patterns:
+ * - "README.md"            → relative to basePath
+ * - "/README.md"           → treated as relative to basePath (agent convention)
+ * - "src/agent/tools.ts"   → relative to basePath
+ * - "D:\web\...\README.md" → absolute path, allowed only if within basePath
  */
 export function safeResolve(basePath: string, targetPath: string): string {
-  const resolved = path.resolve(basePath, targetPath);
-  const relative = path.relative(basePath, resolved);
+  // Normalize: strip leading "/" — agents use "/file" to mean "workspace root / file"
+  let normalized = targetPath;
+  if (normalized.startsWith("/") && !normalized.match(/^[\/\\][a-zA-Z]:/)) {
+    normalized = normalized.slice(1);
+  }
 
-  if (relative.startsWith("..") || path.isAbsolute(relative)) {
+  const resolved = path.resolve(basePath, normalized);
+  const rel = path.relative(basePath, resolved);
+
+  // On Windows, different drive letters produce absolute relative paths
+  if (rel.startsWith("..") || path.isAbsolute(rel)) {
     throw new Error(`Path traversal detected: ${targetPath}`);
   }
 

@@ -41,6 +41,28 @@ export class CostTracker {
     return this._spent + estimatedCost <= this.budget;
   }
 
+  /**
+   * Estimate the worst-case cost for a single model call.
+   * Uses max_tokens as the upper bound for output, plus a rough
+   * estimate of input tokens from the message history.
+   *
+   * @param provider - The model provider
+   * @param inputTokenEstimate - Estimated input tokens for this call
+   * @param maxTokens - The max_tokens parameter (output token cap)
+   * @returns Estimated worst-case cost in dollars
+   */
+  estimateWorstCase(
+    provider: ModelProvider,
+    inputTokenEstimate: number,
+    maxTokens: number
+  ): number {
+    const pricing = PRICING[provider];
+    if (!pricing) return 0;
+    const inputCost = (inputTokenEstimate / 1_000_000) * pricing.input;
+    const outputCost = (maxTokens / 1_000_000) * pricing.output;
+    return inputCost + outputCost;
+  }
+
   /** Check if we've crossed the 80% warning threshold */
   isOverWarningThreshold(): boolean {
     return this._spent > this.budget * 0.8;

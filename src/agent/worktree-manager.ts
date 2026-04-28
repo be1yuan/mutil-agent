@@ -9,12 +9,47 @@
  * 1. acquire() — creates a new worktree from HEAD
  * 2. sub-agent runs with worktreeDir as workspaceDir
  * 3. release() — removes the worktree
+ *
+ * Safety: process exit hooks are registered to clean up worktrees
+ * even if the process is killed (SIGINT/SIGTERM/exit).
  */
 
 import { execFile } from "node:child_process";
 import { mkdir, rm, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { getLogger } from "../observability/logger.js";
+
+// Track active worktrees for cleanup on process exit
+const activeWorktrees: Set<string> = new Set();
+let exitHandlerRegistered = false;
+
+/**
+ * Register a process exit handler that prunes all active worktrees.
+ * Called once on first worktree acquisition.
+ */
+function ensureExitHandler(mainDir: string): void {
+  if (exitHandlerRegistered) return;
+  exitHandlerRegistered = true;
+
+  const cleanup = () => {
+    for (const worktreeDir of activeWorktrees) {
+      try {
+        // Synchronous fallback — best effort
+        execFile("git", ["worktree", "remove", "--force", worktreeDir], {
+          cwd: mainDir,
+          timeout: 5_000,
+        }, () => {}); // fire-and-forget
+      } catch {
+        // Best effort
+      }
+    }
+    activeWorktrees.clear();
+  };
+
+  process.on("exit", cleanup);
+  process.on("SIGINT", () => { cleanup(); process.exit(130); });
+  process.on("SIGTERM", () => { cleanup(); process.exit(143); });
+}
 
 export interface WorktreeHandle {
   /** Absolute path to the worktree directory */
@@ -95,9 +130,14 @@ export async function acquireWorktree(
   // Create worktree from HEAD (detached HEAD)
   await gitExec(mainDir, ["worktree", "add", "--detach", worktreeDir, "HEAD"]);
 
+  // Register for process-exit cleanup
+  activeWorktrees.add(worktreeDir);
+  ensureExitHandler(mainDir);
+
   logger.info("worktree.acquired", { agentType, worktreeDir });
 
   const cleanup = async () => {
+    activeWorktrees.delete(worktreeDir);
     try {
       await gitExec(mainDir, ["worktree", "remove", "--force", worktreeDir]);
       logger.info("worktree.released", { agentType, worktreeDir });
@@ -126,4 +166,24 @@ export async function resolveIsolation(
   if (requested !== "worktree") return "context";
   if (await isGitRepo(mainDir)) return "worktree";
   return "context"; // fallback if not a git repo
+}
+
+/**
+ * Prune stale worktrees left behind by previous runs.
+ * Safe to call at startup — only removes worktrees that are
+ * no longer referenced by any working directory.
+ */
+export async function pruneStaleWorktrees(mainDir: string): Promise<void> {
+  const logger = getLogger();
+  try {
+    if (!(await isGitRepo(mainDir))) return;
+    await gitExec(mainDir, ["worktree", "prune"]);
+    logger.info("worktree.pruned", { dir: mainDir });
+  } catch (err) {
+    // Non-critical — just log and continue
+    logger.warn("worktree.prune_failed", {
+      dir: mainDir,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 }

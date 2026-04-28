@@ -12,6 +12,8 @@ import { PermissionResolver } from "../security/permission-resolver.js";
 import { CostTracker } from "../observability/cost-tracker.js";
 import { ConcurrencyLimiter } from "../agent/concurrency-limiter.js";
 import { Committee, type AggregationStrategy } from "../agent/committee.js";
+import { pruneStaleWorktrees } from "../agent/worktree-manager.js";
+import { isCheerioAvailable } from "../agent/web-tools.js";
 import { createAppLogger, setLogger } from "../observability/logger.js";
 import type { ModelAdapter } from "../adapters/types.js";
 import type { AgentDefinition } from "../agent/types.js";
@@ -40,6 +42,10 @@ class Orchestrator {
     // Setup logger
     this.logger = createAppLogger(config.observability);
     setLogger(this.logger);
+
+    // Prune stale worktrees from previous runs
+    const workspaceDir = path.dirname(path.resolve(this.configPath));
+    await pruneStaleWorktrees(workspaceDir);
 
     // Create adapters
     for (const [provider, providerConfig] of Object.entries(config.providers)) {
@@ -236,6 +242,12 @@ program
       console.log(`Loaded ${agents.size} agent definitions.`);
       for (const [agentType, loaded] of agents) {
         console.log(`  ${agentType}: ${loaded.definition.model}`);
+      }
+
+      // Optional dependency check
+      if (!isCheerioAvailable()) {
+        console.log("\n  [hint] cheerio not installed — WebFetch will use regex-based extraction.");
+        console.log("         Install for better results: npm install cheerio");
       }
     } catch (error) {
       console.error(`Validation failed: ${(error as Error).message}`);

@@ -51,6 +51,8 @@ export class FallbackExecutor {
         lastError = error as Error;
         if (!this.isRetryable(error)) break;
         if (attempt < this.policy.maxRetries) {
+          // Notify caller about the retry so streaming consumers can emit a marker
+          params.onRetry?.(attempt + 1, lastError);
           const delay = this.policy.retryDelayMs * 2 ** attempt;
           await sleep(delay);
         }

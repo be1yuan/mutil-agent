@@ -236,13 +236,22 @@ pnpm dev run "分析代码库" --agent explore
 
 ## 已知限制
 
-1. **token 计费固有特性**: 单次模型调用输出 token 无法预先精确知道，可能出现调用后超预算的情况。已通过 80% 预警 + steps 上限缓解。
+1. **token 计费固有特性**: 单次模型调用输出 token 无法预先精确知道。已通过 **前置最坏情况预算检查**（`estimateWorstCase` + `canAfford`）+ 80% 预警 + steps 上限 **三重缓解**。
 
 2. **Metrics 未实现**: 设计文档中的 Prometheus 指标 (metrics.ts) 尚未创建，推到 v1.0。
 
 3. **Committee 模式无并行工具执行**: Committee 内每个 Agent 仍是串行工具执行，v0.3 可考虑工具级并行。
 
-4. **Worktree 清理依赖 git**: 如果进程异常退出，worktree 可能残留。需要手动 `git worktree prune`。
+4. **cheerio 为可选依赖**: 未安装时 WebFetch 自动降级到 regex 模式。validate 命令会提示安装，运行时首次降级会记日志。
+
+### 已解决的限制
+
+| 原限制 | 解决方案 | 版本 |
+|--------|---------|------|
+| 流式重试输出重复 | `onRetry` 回调 + `[retry attempt N]` 标记 | v0.2+ |
+| 单次调用可能超预算 | `estimateWorstCase()` 前置检查 + `maxTokensPerStep` 字段 | v0.2+ |
+| Worktree 残留 | process exit 钩子自动清理 + 启动时 `git worktree prune` | v0.2+ |
+| cheerio 静默降级 | `isCheerioAvailable()` 检测 + 日志提示 + validate 命令展示 | v0.2+ |
 
 ---
 

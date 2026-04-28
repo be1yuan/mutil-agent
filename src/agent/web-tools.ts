@@ -443,13 +443,25 @@ export async function webFetch(
 // If cheerio is available, use it for better extraction.
 
 let cheerioModule: typeof import("cheerio") | undefined;
+let cheerioAvailable = false;
 
 try {
   // Dynamic import — optional dependency
   const mod = await import("cheerio");
   cheerioModule = mod;
+  cheerioAvailable = true;
 } catch {
   // cheerio not installed, fallback to regex-based extraction
+  // Log a one-time hint so users know they can get better results
+  const { getLogger } = await import("../observability/logger.js");
+  getLogger().info("webtools.cheerio_missing", {
+    hint: "Install cheerio for better HTML extraction: npm install cheerio",
+  });
+}
+
+/** Check if cheerio is available (useful for status/diagnostics) */
+export function isCheerioAvailable(): boolean {
+  return cheerioAvailable;
 }
 
 function extractContent(html: string): { title: string; content: string } {

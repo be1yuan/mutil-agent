@@ -28,6 +28,8 @@ export interface AgentDefinition {
   maxSteps: number;
   timeout: number;                 // ms
   isolation?: "context" | "worktree";
+  /** Max output tokens per model call step. Default 4096 if not specified. */
+  maxTokensPerStep?: number;
 }
 
 // ── Parsed tools ──

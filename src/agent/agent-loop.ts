@@ -72,13 +72,44 @@ export class AgentLoop {
       // 1. Select model provider
       const provider = this.deps.adapterSelector.select(task, definition);
 
+      // 1b. Pre-flight budget check: estimate worst-case cost
+      const maxTokens = definition.maxTokensPerStep ?? 4096;
+      const inputEstimate = this.estimateInputTokens(history);
+      const worstCaseCost = this.deps.costTracker.estimateWorstCase(
+        provider as ModelProvider,
+        inputEstimate,
+        maxTokens
+      );
+      if (!this.deps.costTracker.canAfford(worstCaseCost)) {
+        logger.warn("agent.budget.preflight_denied", {
+          agentType: definition.agentType,
+          worstCaseCost: worstCaseCost.toFixed(6),
+          remaining: this.deps.costTracker.remaining.toFixed(6),
+        });
+        return {
+          status: "budget_exceeded",
+          content: `Budget insufficient for next model call (estimated worst case: $${worstCaseCost.toFixed(4)}, remaining: $${this.deps.costTracker.remaining.toFixed(4)})`,
+          steps,
+          cost: this.deps.costTracker.spent,
+        };
+      }
+
       const params: ChatParams = {
         model: definition.model,
         system: definition.systemPrompt,
         messages: history,
         tools: allowedTools,
+        maxTokens: definition.maxTokensPerStep ?? 4096,
         stream: !!this.deps.onStreamText,
         onTextDelta: this.deps.onStreamText,
+        onRetry: (attempt: number, error: Error) => {
+          // When a retry occurs during streaming, emit a visible marker
+          // so the user knows subsequent output is from a new attempt,
+          // not a continuation of the previous (possibly corrupted) stream.
+          if (this.deps.onStreamText) {
+            this.deps.onStreamText(`\n[retry attempt ${attempt}: ${error.message.slice(0, 80)}]\n`);
+          }
+        },
       };
 
       let response: ChatResponse;
@@ -368,5 +399,30 @@ export class AgentLoop {
         }
       }
     }
+  }
+
+  /**
+   * Rough token estimate for a message history.
+   * Uses the ~4 chars per token heuristic. This is intentionally
+   * conservative (over-estimates) for budget pre-flight checks.
+   */
+  private estimateInputTokens(
+    history: (import("../adapters/types.js").Message | import("../adapters/types.js").ToolResult)[]
+  ): number {
+    let chars = 0;
+    for (const msg of history) {
+      if (typeof msg.content === "string") {
+        chars += msg.content.length;
+      } else if (Array.isArray(msg.content)) {
+        for (const block of msg.content) {
+          if ("text" in block && typeof block.text === "string") {
+            chars += block.text.length;
+          } else if ("content" in block && typeof block.content === "string") {
+            chars += block.content.length;
+          }
+        }
+      }
+    }
+    return Math.ceil(chars / 4);
   }
 }

@@ -66,6 +66,8 @@ export interface ChatParams {
   stream?: boolean;
   /** Callback for real-time text output when streaming */
   onTextDelta?: (text: string) => void;
+  /** Called when a retry is about to happen (after a streaming failure) */
+  onRetry?: (attempt: number, error: Error) => void;
 }
 
 export interface ChatResponse {

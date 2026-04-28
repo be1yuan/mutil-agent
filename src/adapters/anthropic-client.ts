@@ -62,7 +62,9 @@ function toAnthropicMessages(
           : Array.isArray(msg.content)
             ? msg.content.map((b) => {
                 if ("text" in b) return { type: "text" as const, text: b.text };
-                return { type: "tool_result" as const, tool_use_id: b.tool_use_id, content: b.content };
+                // tool_result block — structural check passed in isToolResult
+                const tr = b as unknown as { tool_use_id: string; content: string };
+                return { type: "tool_result" as const, tool_use_id: tr.tool_use_id, content: tr.content };
               })
             : String(msg.content),
       });
@@ -151,7 +153,11 @@ class BaseAnthropicAdapter implements ModelAdapter {
     }
 
     // Non-streaming mode (original path)
-    const response = await this.client.messages.create(this.buildRequestParams(params));
+    // Cast to non-streaming return type — buildRequestParams never sets stream: true,
+    // but the SDK's overload resolution sees the base params type and returns a union.
+    const response = await this.client.messages.create(
+      this.buildRequestParams(params)
+    ) as Anthropic.Messages.Message;
     return normalizeResponse(response, this.provider);
   }
 
@@ -340,6 +346,44 @@ export class GLMAdapter extends BaseAnthropicAdapter {
         streaming: true,
         jsonMode: true,
         thinking: true,
+      },
+    });
+  }
+}
+
+export class MiMoAdapter extends BaseAnthropicAdapter {
+  constructor(apiKey: string) {
+    // MiMo's Anthropic-compatible endpoint does NOT use the standard
+    // x-api-key header. It supports two auth methods:
+    //   方式一: api-key: $MIMO_API_KEY
+    //   方式二: Authorization: Bearer $MIMO_API_KEY
+    //
+    // The Anthropic SDK always sends x-api-key, which MiMo may reject.
+    // We use a custom fetch override to strip x-api-key and inject the
+    // correct auth header instead.
+    super("mimo", "dummy", "https://api.xiaomimimo.com/anthropic", {
+      name: "MiMo-V2.5-Pro",
+      provider: "mimo",
+      contextWindow: 1_000_000,
+      pricing: { input: 1.0, output: 3.0, cacheHit: 0.2 },
+      capabilities: {
+        toolCalling: true,
+        streaming: true,
+        jsonMode: true,
+        thinking: true,
+      },
+    });
+    // Re-create client with custom fetch to control auth headers
+    this.client = new Anthropic({
+      apiKey: "dummy",
+      baseURL: "https://api.xiaomimimo.com/anthropic",
+      fetch: async (url, init) => {
+        const headers = new Headers(init?.headers);
+        headers.delete("x-api-key");
+        // MiMo 方式一: api-key header (simpler than Bearer, matches the
+        // API provider's recommended auth format)
+        headers.set("api-key", apiKey);
+        return fetch(url, { ...init, headers });
       },
     });
   }

@@ -5,7 +5,13 @@
       "Bash(npx vitest *)",
       "Bash(node -e \"const p = require\\('./package.json'\\); console.log\\('deps:', Object.keys\\(p.dependencies\\).join\\(', '\\)\\)\")",
       "Bash(git add *)",
-      "Bash(git push *)"
+      "Bash(git push *)",
+      "Bash(git commit -m ' *)",
+      "Bash(npm run *)",
+      "Bash(npm test *)",
+      "Bash(node *)",
+      "WebSearch",
+      "Bash(npm view *)"
     ]
   }
 }

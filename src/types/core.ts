@@ -1,6 +1,6 @@
 // Core shared types — no dependencies
 
-export type ModelProvider = "deepseek" | "zhipu";
+export type ModelProvider = "deepseek" | "zhipu" | "mimo";
 
 export interface Usage {
   inputTokens: number;

@@ -4,7 +4,7 @@ import { Command } from "commander";
 import path from "node:path";
 import { loadConfig, loadAgents } from "../config/loader.js";
 import { validateConfig } from "../config/validator.js";
-import { DeepSeekAdapter, GLMAdapter } from "../adapters/anthropic-client.js";
+import { DeepSeekAdapter, GLMAdapter, MiMoAdapter } from "../adapters/anthropic-client.js";
 import { FallbackExecutor } from "../adapters/fallback-executor.js";
 import { AgentLoop } from "../agent/agent-loop.js";
 import { AdapterSelector } from "../agent/adapter-selector.js";
@@ -53,6 +53,8 @@ class Orchestrator {
         this.adapters.set(provider as ModelProvider, new DeepSeekAdapter(providerConfig.apiKey));
       } else if (provider === "zhipu") {
         this.adapters.set(provider as ModelProvider, new GLMAdapter(providerConfig.apiKey));
+      } else if (provider === "mimo") {
+        this.adapters.set(provider as ModelProvider, new MiMoAdapter(providerConfig.apiKey));
       }
     }
 
@@ -133,13 +135,17 @@ class Orchestrator {
     task: string,
     options: { agents?: string; strategy?: string; budget?: number }
   ): Promise<void> {
-    const agentTypes = (options.agents ?? "explore,coder,reviewer").split(",");
+    // Support both comma and space as delimiters (PowerShell expands commas into spaces)
+    const agentTypes = (options.agents ?? "explore,coder,reviewer")
+      .split(/[,\s]+/)
+      .map((a: string) => a.trim())
+      .filter(Boolean);
     const strategy = (options.strategy ?? "concat") as AggregationStrategy;
     const budget = options.budget ?? this.config.budget.maxDollars;
 
     // Validate agent types
     for (const at of agentTypes) {
-      if (!this.agentDefinitions.has(at.trim())) {
+      if (!this.agentDefinitions.has(at)) {
         console.error(`Agent "${at.trim()}" not found. Available: ${Array.from(this.agentDefinitions.keys()).join(", ")}`);
         process.exit(1);
       }
@@ -172,7 +178,7 @@ class Orchestrator {
 
     const committee = new Committee(deps);
     const result = await committee.run(task, {
-      agentTypes: agentTypes.map((a) => a.trim()),
+      agentTypes,
       strategy,
     }, budget);
 

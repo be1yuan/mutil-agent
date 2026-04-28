@@ -5,6 +5,7 @@ import type { ModelProvider, Usage } from "../types/core.js";
 const PRICING: Record<ModelProvider, { input: number; output: number; cacheHit?: number }> = {
   deepseek: { input: 0.41, output: 0.82, cacheHit: 0.0034 },
   zhipu: { input: 1.0, output: 3.2 },
+  mimo: { input: 1.0, output: 3.0, cacheHit: 0.2 },
 };
 
 // ── Cost tracker ──

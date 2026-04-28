@@ -2,6 +2,7 @@ import { readFile, writeFile, mkdir, readdir, stat } from "node:fs/promises";
 import { resolve, relative, dirname } from "node:path";
 import { minimatch } from "minimatch";
 import { safeExec, safeResolve } from "../security/safe-exec.js";
+import { webSearch, webFetch } from "./web-tools.js";
 
 const SKIP_DIRS = ["node_modules", ".git", "dist", ".claude"];
 
@@ -24,9 +25,9 @@ export async function executeTool(
     case "Glob":
       return executeGlob(args, workspaceDir);
     case "WebSearch":
-      return `[not implemented] WebSearch — query: ${String(args.query ?? "")}`;
+      return webSearch({ query: String(args.query ?? "") });
     case "WebFetch":
-      return `[not implemented] WebFetch — url: ${String(args.url ?? "")}`;
+      return webFetch({ url: String(args.url ?? "") });
     default:
       return `[unknown tool] ${toolName}`;
   }

@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.54.0",
+    "cheerio": "^1.2.0",
     "commander": "^13.1.0",
     "gray-matter": "^4.0.3",
     "minimatch": "^10.0.3",

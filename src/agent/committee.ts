@@ -16,6 +16,15 @@ import { AgentLoop, type AgentLoopDeps } from "./agent-loop.js";
 import type { AgentResult } from "../types/core.js";
 import { getLogger } from "../observability/logger.js";
 
+/** ANSI colors for distinguishing committee members */
+const MEMBER_COLORS = [
+  (s: string) => `\x1b[36m${s}\x1b[0m`, // cyan
+  (s: string) => `\x1b[33m${s}\x1b[0m`, // yellow
+  (s: string) => `\x1b[35m${s}\x1b[0m`, // magenta
+  (s: string) => `\x1b[32m${s}\x1b[0m`, // green
+  (s: string) => `\x1b[34m${s}\x1b[0m`, // blue
+];
+
 // ── Types ──
 
 export type AggregationStrategy = "majority" | "concat" | "best";
@@ -71,15 +80,23 @@ export class Committee {
     const maxConcurrent = config.maxConcurrency ?? config.agentTypes.length;
     const semaphore = new Semaphore(maxConcurrent);
 
-    const promises = config.agentTypes.map(async (agentType) => {
+    const promises = config.agentTypes.map(async (agentType, index) => {
       const release = await semaphore.acquire();
       try {
         const definition = this.deps.loadAgentDefinition(agentType);
+
+        // Each member gets a color prefix via getStreamPrefix callback
+        const color = MEMBER_COLORS[index % MEMBER_COLORS.length];
+        const memberDeps: AgentLoopDeps = {
+          ...this.deps,
+          getStreamPrefix: (type: string) => color(`[${type}] `),
+        };
+
         // Each agent gets the full remaining budget — they share the same
         // CostTracker instance, so the first to exceed stops the rest.
         // This avoids the "small per-agent budget" problem where one
         // agent needs more than budget/n.
-        const loop = new AgentLoop(this.deps);
+        const loop = new AgentLoop(memberDeps);
         const result = await loop.run(task, definition, this.deps.costTracker.remaining);
 
         return { agentType, result };

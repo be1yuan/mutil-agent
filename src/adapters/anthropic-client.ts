@@ -323,7 +323,7 @@ export class DeepSeekAdapter extends BaseAnthropicAdapter {
       name: "deepseek-v4-pro",
       provider: "deepseek",
       contextWindow: 1_000_000,
-      pricing: { input: 0.41, output: 0.82, cacheHit: 0.0034 },
+      pricing: { input: 2.87, output: 5.74, cacheHit: 0.0238 }, // converted to yuan (RMB), 1 USD = 7 CNY
       capabilities: {
         toolCalling: true,
         streaming: true,
@@ -340,7 +340,7 @@ export class GLMAdapter extends BaseAnthropicAdapter {
       name: "glm-5.1",
       provider: "zhipu",
       contextWindow: 200_000,
-      pricing: { input: 1.0, output: 3.2 },
+      pricing: { input: 7.0, output: 22.4 }, // converted to yuan (RMB), 1 USD = 7 CNY
       capabilities: {
         toolCalling: true,
         streaming: true,
@@ -365,7 +365,7 @@ export class MiMoAdapter extends BaseAnthropicAdapter {
       name: "MiMo-V2.5-Pro",
       provider: "mimo",
       contextWindow: 1_000_000,
-      pricing: { input: 1.0, output: 3.0, cacheHit: 0.2 },
+      pricing: { input: 7.0, output: 21.0, cacheHit: 1.4 }, // converted to yuan (RMB), 1 USD = 7 CNY
       capabilities: {
         toolCalling: true,
         streaming: true,

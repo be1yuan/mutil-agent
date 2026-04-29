@@ -3,13 +3,23 @@ import { resolve, relative, dirname } from "node:path";
 import { minimatch } from "minimatch";
 import { safeExec, safeResolve } from "../security/safe-exec.js";
 import { webSearch, webFetch } from "./web-tools.js";
+import type { Mailbox } from "./mailbox.js";
 
 const SKIP_DIRS = ["node_modules", ".git", "dist", ".claude"];
+
+/** Extra context for tools that need access to shared services */
+export interface ToolContext {
+  /** File mailbox instance (if enabled) */
+  mailbox?: Mailbox;
+  /** Current agent type (for MailboxReceive default) */
+  currentAgentType?: string;
+}
 
 export async function executeTool(
   toolName: string,
   args: Record<string, unknown>,
-  workspaceDir: string
+  workspaceDir: string,
+  ctx?: ToolContext
 ): Promise<string> {
   switch (toolName) {
     case "Read":
@@ -28,6 +38,10 @@ export async function executeTool(
       return webSearch({ query: String(args.query ?? "") });
     case "WebFetch":
       return webFetch({ url: String(args.url ?? "") });
+    case "MailboxSend":
+      return executeMailboxSend(args, ctx);
+    case "MailboxReceive":
+      return executeMailboxReceive(args, ctx);
     default:
       return `[unknown tool] ${toolName}`;
   }
@@ -228,5 +242,74 @@ async function* walkDir(dir: string): AsyncGenerator<string> {
     } else if (e.isFile()) {
       yield fullPath;
     }
+  }
+}
+
+// ── Mailbox tools ──
+
+async function executeMailboxSend(
+  args: Record<string, unknown>,
+  ctx?: ToolContext
+): Promise<string> {
+  if (!ctx?.mailbox) {
+    return "[mailbox error] Mailbox not enabled. Add mailbox config to orchestrator.yaml.";
+  }
+
+  const to = String(args.to ?? "");
+  const subject = String(args.subject ?? "");
+  const body = String(args.body ?? "");
+  const priority = (args.priority as "low" | "normal" | "high") ?? "normal";
+  const correlationId = args.correlationId ? String(args.correlationId) : undefined;
+
+  if (!to || !subject) {
+    return "[mailbox error] 'to' and 'subject' are required";
+  }
+
+  try {
+    const msg = await ctx.mailbox.send({
+      from: ctx.currentAgentType ?? "unknown",
+      to,
+      subject,
+      body,
+      priority,
+      correlationId,
+    });
+    return JSON.stringify({ sent: true, id: msg.id, to: msg.to });
+  } catch (err) {
+    return `[mailbox error] ${err instanceof Error ? err.message : String(err)}`;
+  }
+}
+
+async function executeMailboxReceive(
+  args: Record<string, unknown>,
+  ctx?: ToolContext
+): Promise<string> {
+  if (!ctx?.mailbox) {
+    return "[mailbox error] Mailbox not enabled. Add mailbox config to orchestrator.yaml.";
+  }
+
+  const agentType = String(args.agentType ?? ctx.currentAgentType ?? "unknown");
+  const wait = args.wait === true;
+  const timeout = Number(args.timeout ?? 30_000);
+
+  try {
+    if (wait) {
+      const msg = await ctx.mailbox.waitFor(agentType, { timeout });
+      // Mark as read after receiving
+      await ctx.mailbox.markRead(agentType, msg.id);
+      return JSON.stringify(msg, null, 2);
+    } else {
+      const messages = await ctx.mailbox.receive(agentType);
+      if (messages.length === 0) {
+        return JSON.stringify({ empty: true, agentType });
+      }
+      // Mark all as read
+      for (const msg of messages) {
+        await ctx.mailbox.markRead(agentType, msg.id);
+      }
+      return JSON.stringify(messages, null, 2);
+    }
+  } catch (err) {
+    return `[mailbox error] ${err instanceof Error ? err.message : String(err)}`;
   }
 }

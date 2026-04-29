@@ -3,9 +3,9 @@ import type { ModelProvider, Usage } from "../types/core.js";
 // ── Pricing table ──
 
 const PRICING: Record<ModelProvider, { input: number; output: number; cacheHit?: number }> = {
-  deepseek: { input: 0.41, output: 0.82, cacheHit: 0.0034 },
-  zhipu: { input: 1.0, output: 3.2 },
-  mimo: { input: 1.0, output: 3.0, cacheHit: 0.2 },
+  deepseek: { input: 2.87, output: 5.74, cacheHit: 0.0238 }, // 1 USD = 7 CNY
+  zhipu: { input: 7.0, output: 22.4 }, // 1 USD = 7 CNY
+  mimo: { input: 7.0, output: 21.0, cacheHit: 1.4 }, // 1 USD = 7 CNY
 };
 
 // ── Cost tracker ──
@@ -50,7 +50,7 @@ export class CostTracker {
    * @param provider - The model provider
    * @param inputTokenEstimate - Estimated input tokens for this call
    * @param maxTokens - The max_tokens parameter (output token cap)
-   * @returns Estimated worst-case cost in dollars
+   * @returns Estimated worst-case cost in yuan (RMB)
    */
   estimateWorstCase(
     provider: ModelProvider,

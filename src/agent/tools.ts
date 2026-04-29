@@ -168,6 +168,40 @@ export const webFetchTool: ToolDefinition = {
   },
 };
 
+export const mailboxSendTool: ToolDefinition = {
+  name: "MailboxSend",
+  description: "Send a message to another agent via the file mailbox. Use this for cross-process or asynchronous communication between agents.",
+  parameters: {
+    type: "object",
+    properties: {
+      to: { type: "string", description: "Recipient agent type (or '*' for broadcast)" },
+      subject: { type: "string", description: "Message subject" },
+      body: { type: "string", description: "Message body (Markdown)" },
+      priority: {
+        type: "string",
+        enum: ["low", "normal", "high"],
+        description: "Message priority (default: normal)",
+      },
+      correlationId: { type: "string", description: "Optional correlation ID for request-reply pattern" },
+    },
+    required: ["to", "subject", "body"],
+  },
+};
+
+export const mailboxReceiveTool: ToolDefinition = {
+  name: "MailboxReceive",
+  description: "Receive unread messages from your mailbox. Optionally wait for a new message to arrive.",
+  parameters: {
+    type: "object",
+    properties: {
+      agentType: { type: "string", description: "Mailbox owner agent type (defaults to current agent)" },
+      wait: { type: "boolean", description: "Wait for a new message if none available (default: false)" },
+      timeout: { type: "number", description: "Wait timeout in ms (default: 30000, only used with wait=true)" },
+    },
+    required: [],
+  },
+};
+
 /** All built-in tools */
 export const allTools: ToolDefinition[] = [
   readTool,
@@ -178,6 +212,8 @@ export const allTools: ToolDefinition[] = [
   globTool,
   webSearchTool,
   webFetchTool,
+  mailboxSendTool,
+  mailboxReceiveTool,
   taskTool,
 ];
 

@@ -11,7 +11,8 @@
       "Bash(npm test *)",
       "Bash(node *)",
       "WebSearch",
-      "Bash(npm view *)"
+      "Bash(npm view *)",
+      "Bash(gh pr *)"
     ]
   }
 }

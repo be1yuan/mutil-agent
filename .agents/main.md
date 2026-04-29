@@ -17,6 +17,8 @@ tools:
   Glob: allow
   WebSearch: allow
   WebFetch: allow
+  MailboxSend: allow
+  MailboxReceive: allow
   task: allow
 ---
 

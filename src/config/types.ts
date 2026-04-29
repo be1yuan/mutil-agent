@@ -22,12 +22,34 @@ export interface SecurityConfig {
 }
 
 export interface BudgetConfig {
-  maxDollars: number;
+  maxYuan: number;
 }
 
 export interface ObservabilityConfig {
   logLevel: "debug" | "info" | "warn" | "error";
   metricsEnabled: boolean;
+}
+
+export interface MailboxConfig {
+  enabled: boolean;
+  /** Directory relative to workspace (default: ".mailbox") */
+  dir: string;
+  /** Max message age in ms before cleanup (default: 86400000 = 24h) */
+  maxAgeMs: number;
+  /** Poll interval for waitFor() in ms (default: 500) */
+  pollIntervalMs: number;
+}
+
+export interface ApiConfig {
+  enabled: boolean;
+  /** Bind host (default: "127.0.0.1") */
+  host: string;
+  /** Bind port (default: 3100) */
+  port: number;
+  /** Optional Bearer token for authentication */
+  authToken?: string;
+  /** Enable CORS headers (default: true) */
+  cors: boolean;
 }
 
 export interface OrchestratorConfig {
@@ -36,6 +58,8 @@ export interface OrchestratorConfig {
   security: SecurityConfig;
   budget: BudgetConfig;
   observability: ObservabilityConfig;
+  mailbox?: MailboxConfig;
+  api?: ApiConfig;
 }
 
 /** Default config values */
@@ -50,10 +74,22 @@ export const DEFAULT_CONFIG: Partial<OrchestratorConfig> = {
     requireApproval: [],
   },
   budget: {
-    maxDollars: 5.0,
+    maxYuan: 35.0,
   },
   observability: {
     logLevel: "info",
     metricsEnabled: true,
+  },
+  mailbox: {
+    enabled: true,
+    dir: ".mailbox",
+    maxAgeMs: 86_400_000,
+    pollIntervalMs: 500,
+  },
+  api: {
+    enabled: true,
+    host: "127.0.0.1",
+    port: 3100,
+    cors: true,
   },
 };

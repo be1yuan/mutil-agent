@@ -15,6 +15,8 @@ import type { CostTracker } from "../observability/cost-tracker.js";
 import type { PermissionResolver } from "../security/permission-resolver.js";
 import type { ConcurrencyLimiter } from "./concurrency-limiter.js";
 import type { FallbackExecutor } from "../adapters/fallback-executor.js";
+import type { Mailbox } from "./mailbox.js";
+import type { ToolContext } from "./tool-executor.js";
 import { AdapterSelector } from "./adapter-selector.js";
 import { getAllowedTools, buildTaskTool } from "./tools.js";
 import { executeTool } from "./tool-executor.js";
@@ -37,6 +39,25 @@ export interface AgentLoopDeps {
   workspaceDir: string;
   /** If provided, agent will use streaming API and emit text deltas here */
   onStreamText?: (text: string) => void;
+  /** If provided, returns a colored prefix for stream text (used by committee) */
+  getStreamPrefix?: (agentType: string) => string;
+  /** File mailbox instance (if enabled) */
+  mailbox?: Mailbox;
+
+  // ── Lifecycle callbacks (optional, for terminal visualization) ──
+
+  /** Called when a new step begins */
+  onStepStart?: (step: number, agentType: string) => void;
+  /** Called before a tool executes */
+  onToolStart?: (agentType: string, toolName: string, args: Record<string, unknown>) => void;
+  /** Called after a tool finishes */
+  onToolComplete?: (agentType: string, toolName: string, duration: number, success: boolean) => void;
+  /** Called when a sub-agent is spawned */
+  onSubAgentSpawn?: (parentType: string, childType: string, task: string) => void;
+  /** Called when a sub-agent finishes */
+  onSubAgentComplete?: (parentType: string, childType: string, result: SubAgentResult) => void;
+  /** Called after each model call with updated budget info */
+  onBudgetUpdate?: (spent: number, remaining: number) => void;
 }
 
 export interface ApprovalRequest {
@@ -69,6 +90,9 @@ export class AgentLoop {
     });
 
     while (steps < definition.maxSteps) {
+      // Notify: step start
+      this.deps.onStepStart?.(steps, definition.agentType);
+
       // 1. Select model provider
       const provider = this.deps.adapterSelector.select(task, definition);
 
@@ -88,11 +112,25 @@ export class AgentLoop {
         });
         return {
           status: "budget_exceeded",
-          content: `Budget insufficient for next model call (estimated worst case: $${worstCaseCost.toFixed(4)}, remaining: $${this.deps.costTracker.remaining.toFixed(4)})`,
+          content: `Budget insufficient for next model call (estimated worst case: ¥${worstCaseCost.toFixed(4)}, remaining: ¥${this.deps.costTracker.remaining.toFixed(4)})`,
           steps,
           cost: this.deps.costTracker.spent,
         };
       }
+
+      // Apply stream prefix if provided (used by committee for color coding)
+      const streamHandler = this.deps.onStreamText
+        ? this.deps.getStreamPrefix
+          ? (text: string) => {
+              const prefix = this.deps.getStreamPrefix!(definition.agentType);
+              const prefixed = text
+                .split("\n")
+                .map((line, i) => (i === 0 ? prefix + line : " ".repeat(10) + line))
+                .join("\n");
+              this.deps.onStreamText!(prefixed);
+            }
+          : this.deps.onStreamText
+        : undefined;
 
       const params: ChatParams = {
         model: definition.model,
@@ -100,14 +138,14 @@ export class AgentLoop {
         messages: history,
         tools: allowedTools,
         maxTokens: definition.maxTokensPerStep ?? 4096,
-        stream: !!this.deps.onStreamText,
-        onTextDelta: this.deps.onStreamText,
+        stream: !!streamHandler,
+        onTextDelta: streamHandler,
         onRetry: (attempt: number, error: Error) => {
           // When a retry occurs during streaming, emit a visible marker
           // so the user knows subsequent output is from a new attempt,
           // not a continuation of the previous (possibly corrupted) stream.
-          if (this.deps.onStreamText) {
-            this.deps.onStreamText(`\n[retry attempt ${attempt}: ${error.message.slice(0, 80)}]\n`);
+          if (streamHandler) {
+            streamHandler(`\n[retry attempt ${attempt}: ${error.message.slice(0, 80)}]\n`);
           }
         },
       };
@@ -135,6 +173,7 @@ export class AgentLoop {
 
       // 2. Cost tracking
       this.deps.costTracker.record(response.usage, provider);
+      this.deps.onBudgetUpdate?.(this.deps.costTracker.spent, this.deps.costTracker.remaining);
       if (this.deps.costTracker.spent > budget) {
         logger.warn("agent.budget_exceeded", {
           agentType: definition.agentType,
@@ -167,7 +206,17 @@ export class AgentLoop {
       const toolResults: { tool_use_id: string; content: string }[] = [];
 
       for (const tc of response.toolCalls) {
+        // Notify: tool start
+        this.deps.onToolStart?.(definition.agentType, tc.name, tc.arguments);
+        const toolStart = Date.now();
+
         const result = await this.executeToolCall(tc, definition);
+
+        // Notify: tool complete
+        const toolDuration = Date.now() - toolStart;
+        const toolSuccess = !result.startsWith("[denied]") && !result.startsWith("[tool error]");
+        this.deps.onToolComplete?.(definition.agentType, tc.name, toolDuration, toolSuccess);
+
         toolResults.push({
           tool_use_id: tc.id,
           content: result,
@@ -278,7 +327,10 @@ export class AgentLoop {
         agentType: definition.agentType,
         tool: tc.name,
       });
-      return await executeTool(tc.name, tc.arguments, this.deps.workspaceDir);
+      return await executeTool(tc.name, tc.arguments, this.deps.workspaceDir, {
+        mailbox: this.deps.mailbox,
+        currentAgentType: definition.agentType,
+      });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       logger.error("agent.tool.error", {
@@ -316,6 +368,9 @@ export class AgentLoop {
       subAgent: args.agentType,
       task: args.task.slice(0, 200),
     });
+
+    // Notify: sub-agent spawn
+    this.deps.onSubAgentSpawn?.(definition.agentType, args.agentType, args.task);
 
     // Determine isolation mode
     const isolation = await resolveIsolation(
@@ -375,6 +430,9 @@ export class AgentLoop {
         steps: result.steps,
         cost: result.cost,
       };
+
+      // Notify: sub-agent complete
+      this.deps.onSubAgentComplete?.(definition.agentType, args.agentType, subResult);
 
       return JSON.stringify(subResult);
     } finally {

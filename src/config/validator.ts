@@ -27,12 +27,27 @@ const SecurityConfigSchema = z.object({
 });
 
 const BudgetConfigSchema = z.object({
-  maxDollars: z.number().positive().default(5.0),
+  maxYuan: z.number().positive().default(35.0),
 });
 
 const ObservabilityConfigSchema = z.object({
   logLevel: z.enum(["debug", "info", "warn", "error"]).default("info"),
   metricsEnabled: z.boolean().default(true),
+});
+
+const MailboxConfigSchema = z.object({
+  enabled: z.boolean().default(true),
+  dir: z.string().default(".mailbox"),
+  maxAgeMs: z.number().int().min(1000).default(86_400_000),
+  pollIntervalMs: z.number().int().min(50).default(500),
+});
+
+const ApiConfigSchema = z.object({
+  enabled: z.boolean().default(true),
+  host: z.string().default("127.0.0.1"),
+  port: z.number().int().min(1).max(65535).default(3100),
+  authToken: z.string().optional(),
+  cors: z.boolean().default(true),
 });
 
 const ConfigSchema = z.object({
@@ -44,6 +59,8 @@ const ConfigSchema = z.object({
   security: SecurityConfigSchema.default({}),
   budget: BudgetConfigSchema.default({}),
   observability: ObservabilityConfigSchema.default({}),
+  mailbox: MailboxConfigSchema.default({}).optional(),
+  api: ApiConfigSchema.default({}).optional(),
 });
 
 // ── Validation ──

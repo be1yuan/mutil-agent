@@ -14,10 +14,26 @@ import { ConcurrencyLimiter } from "../agent/concurrency-limiter.js";
 import { Committee, type AggregationStrategy } from "../agent/committee.js";
 import { pruneStaleWorktrees } from "../agent/worktree-manager.js";
 import { isCheerioAvailable } from "../agent/web-tools.js";
+import { Mailbox } from "../agent/mailbox.js";
+import { ApiServer } from "../api/server.js";
 import { createAppLogger, setLogger } from "../observability/logger.js";
+import {
+  renderBanner,
+  renderStepStart,
+  renderToolStart,
+  renderToolComplete,
+  renderSubAgentSpawn,
+  renderSubAgentComplete,
+  renderCostStatus,
+  renderResult,
+  renderCommitteeResult,
+} from "./status-renderer.js";
+import { summarizeToolArgs, style } from "./ansi.js";
+import { DashboardEventBridge } from "./dashboard/event-bridge.js";
 import type { ModelAdapter } from "../adapters/types.js";
 import type { AgentDefinition } from "../agent/types.js";
 import type { ModelProvider } from "../types/core.js";
+import type { SubAgentResult } from "../adapters/types.js";
 
 // ── Orchestrator ──
 
@@ -27,6 +43,8 @@ class Orchestrator {
   private agentDefinitions: Map<string, AgentDefinition> = new Map();
   private logger!: ReturnType<typeof createAppLogger>;
   private config!: import("../config/types.js").OrchestratorConfig;
+  private mailbox?: Mailbox;
+  private apiServer?: ApiServer;
 
   constructor(
     private configPath: string,
@@ -70,13 +88,28 @@ class Orchestrator {
       this.agentDefinitions.set(agentType, loaded.definition);
     }
 
+    // Initialize mailbox (opt-in: must explicitly set enabled: true)
+    if (config.mailbox?.enabled === true) {
+      const mailboxDir = path.join(workspaceDir, config.mailbox?.dir ?? ".mailbox");
+      this.mailbox = new Mailbox(mailboxDir, {
+        pollIntervalMs: config.mailbox?.pollIntervalMs,
+        maxAgeMs: config.mailbox?.maxAgeMs,
+      });
+      await this.mailbox.init();
+      this.logger.info("orchestrator.mailbox.initialized", { dir: mailboxDir });
+    }
+
     this.logger.info("orchestrator.init.complete", {
       providers: Array.from(this.adapters.keys()),
       agents: Array.from(this.agentDefinitions.keys()),
+      mailbox: !!this.mailbox,
     });
   }
 
-  async execute(task: string, options: { agent?: string; budget?: number }): Promise<void> {
+  async execute(
+    task: string,
+    options: { agent?: string; budget?: number; verbose?: boolean; quiet?: boolean; dashboard?: boolean }
+  ): Promise<void> {
     const agentType = options.agent ?? "main";
     const definition = this.agentDefinitions.get(agentType);
     if (!definition) {
@@ -84,9 +117,26 @@ class Orchestrator {
       process.exit(1);
     }
 
-    const budget = options.budget ?? this.config.budget.maxDollars;
-
+    const budget = options.budget ?? this.config.budget.maxYuan;
+    const verbose = options.verbose ?? false;
+    const quiet = options.quiet ?? false;
+    const dashboard = options.dashboard ?? false;
     const workspaceDir = path.dirname(path.resolve(this.configPath));
+
+    // Dashboard mode: use ink TUI
+    if (dashboard) {
+      await this.executeWithDashboard(task, definition, budget, agentType, workspaceDir);
+      return;
+    }
+
+    // Standard mode (Phase 1: enhanced terminal output)
+    // Startup banner
+    if (!quiet) {
+      console.log(renderBanner(agentType, definition.model, budget));
+      console.log();
+    }
+
+    let currentStepCost = 0;
 
     const deps = {
       adapterSelector: new AdapterSelector(),
@@ -96,32 +146,152 @@ class Orchestrator {
       adapters: this.adapters,
       fallbackExecutor: this.fallbackExecutor,
       agentTypes: Array.from(this.agentDefinitions.keys()),
+      mailbox: this.mailbox,
       loadAgentDefinition: (type: string) => {
         const def = this.agentDefinitions.get(type);
         if (!def) throw new Error(`Agent "${type}" not found`);
         return def;
       },
       onApprovalRequest: async (req: { agentType: string; toolName: string; arguments: Record<string, unknown> }) => {
-        // CLI mode: auto-approve for now (interactive mode can be added later)
         this.logger.info("agent.approval.auto", { tool: req.toolName, agentType: req.agentType });
         return true;
       },
       workspaceDir,
-      // Stream text to stdout in real-time
-      onStreamText: (text: string) => {
+      // Stream text to stdout (suppressed in quiet mode)
+      onStreamText: quiet ? undefined : (text: string) => {
         process.stdout.write(text);
+      },
+
+      // ── Lifecycle callbacks ──
+
+      onStepStart: quiet ? undefined : (step: number) => {
+        // Print cost bar from previous step (if any)
+        if (step > 0 && currentStepCost > 0) {
+          console.log(renderCostStatus(currentStepCost, budget, step, definition.maxSteps));
+        }
+        currentStepCost = 0;
+        console.log();
+        console.log(renderStepStart(step, definition.maxSteps));
+      },
+
+      onToolStart: quiet ? undefined : (_agentType: string, toolName: string, args: Record<string, unknown>) => {
+        const detail = verbose ? JSON.stringify(args) : summarizeToolArgs(toolName, args);
+        // Write without newline — onToolComplete will append status
+        process.stdout.write(renderToolStart(toolName, detail, verbose));
+      },
+
+      onToolComplete: quiet ? undefined : (_agentType: string, toolName: string, duration: number, success: boolean) => {
+        // Append status to the tool start line
+        const status = success
+          ? style.success(`  ✓ ${duration}ms`)
+          : style.error(`  ✗ ${duration}ms`);
+        console.log(status);
+      },
+
+      onSubAgentSpawn: quiet ? undefined : (parent: string, child: string, subTask: string) => {
+        console.log(renderSubAgentSpawn(parent, child, subTask));
+      },
+
+      onSubAgentComplete: quiet ? undefined : (_parent: string, child: string, result: SubAgentResult) => {
+        console.log(renderSubAgentComplete(child, result.status, result.cost));
+      },
+
+      onBudgetUpdate: quiet ? undefined : (spent: number, _remaining: number) => {
+        // Track cost per step; actual rendering happens at step boundaries
+        currentStepCost = spent;
       },
     };
 
     const loop = new AgentLoop(deps);
     const result = await loop.run(task, definition, budget);
 
-    console.log("\n--- Result ---");
-    console.log(`Status: ${result.status}`);
-    if (result.content) console.log(`Content:\n${result.content}`);
-    if (result.error) console.log(`Error: ${result.error}`);
-    console.log(`Steps: ${result.steps}`);
-    console.log(`Cost: $${result.cost.toFixed(4)}`);
+    // Final cost bar + result
+    if (!quiet && currentStepCost > 0) {
+      console.log(renderCostStatus(currentStepCost, budget, result.steps, definition.maxSteps));
+    }
+    console.log();
+    console.log(renderResult(result));
+
+    if (result.content && verbose) {
+      console.log(`\nContent:\n${result.content}`);
+    }
+  }
+
+  /** Execute task with ink TUI dashboard */
+  private async executeWithDashboard(
+    task: string,
+    definition: AgentDefinition,
+    budget: number,
+    agentType: string,
+    workspaceDir: string
+  ): Promise<void> {
+    // Lazy-load ink and React to avoid overhead when not using dashboard
+    const { render } = await import("ink");
+    const React = await import("react");
+    const { App } = await import("./dashboard/app.js");
+
+    // Create event bridge
+    const bridge = new DashboardEventBridge();
+
+    // Build base deps (no lifecycle callbacks — bridge provides them)
+    const baseDeps = {
+      adapterSelector: new AdapterSelector(),
+      permissionResolver: new PermissionResolver(this.config.security.requireApproval),
+      costTracker: new CostTracker(budget),
+      concurrencyLimiter: new ConcurrencyLimiter(this.config.security.maxConcurrentAgents),
+      adapters: this.adapters,
+      fallbackExecutor: this.fallbackExecutor,
+      agentTypes: Array.from(this.agentDefinitions.keys()),
+      mailbox: this.mailbox,
+      loadAgentDefinition: (type: string) => {
+        const def = this.agentDefinitions.get(type);
+        if (!def) throw new Error(`Agent "${type}" not found`);
+        return def;
+      },
+      onApprovalRequest: async (_req: { agentType: string; toolName: string; arguments: Record<string, unknown> }) => {
+        this.logger.info("agent.approval.auto", { tool: _req.toolName, agentType: _req.agentType });
+        return true;
+      },
+      workspaceDir,
+    };
+
+    // Wrap deps with bridge callbacks
+    const deps = bridge.createDeps(baseDeps);
+
+    // Render Dashboard UI
+    const { unmount, waitUntilExit } = render(
+      React.createElement(App, {
+        bridge,
+        agentType,
+        model: definition.model,
+        budget,
+        maxSteps: definition.maxSteps,
+      })
+    );
+
+    // Run agent loop in background
+    const loop = new AgentLoop(deps);
+    try {
+      const result = await loop.run(task, definition, budget);
+      // Signal done to dashboard — App will auto-exit via useEffect
+      bridge.emitDone(result.status, result.steps, result.cost, result.content);
+
+      // Wait for ink to finish (App calls exit() after delay)
+      await waitUntilExit();
+
+      // Print final result in standard format after dashboard exits
+      console.log();
+      console.log(renderResult(result));
+
+      if (result.content) {
+        console.log(`\nContent:\n${result.content}`);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      bridge.emitDone("error", 0, 0, msg);
+      await waitUntilExit();
+      console.error(`Error: ${msg}`);
+    }
   }
 
   listAgents(): void {
@@ -133,15 +303,21 @@ class Orchestrator {
 
   async committee(
     task: string,
-    options: { agents?: string; strategy?: string; budget?: number }
+    options: { agents?: string; strategy?: string; budget?: number; verbose?: boolean; quiet?: boolean; dashboard?: boolean }
   ): Promise<void> {
+    // Dashboard is not yet supported for committee mode
+    if (options.dashboard) {
+      console.warn(style.warning("  Warning: --dashboard is not supported in committee mode. Ignoring."));
+    }
+
     // Support both comma and space as delimiters (PowerShell expands commas into spaces)
     const agentTypes = (options.agents ?? "explore,coder,reviewer")
       .split(/[,\s]+/)
       .map((a: string) => a.trim())
       .filter(Boolean);
     const strategy = (options.strategy ?? "concat") as AggregationStrategy;
-    const budget = options.budget ?? this.config.budget.maxDollars;
+    const budget = options.budget ?? this.config.budget.maxYuan;
+    const quiet = options.quiet ?? false;
 
     // Validate agent types
     for (const at of agentTypes) {
@@ -161,6 +337,7 @@ class Orchestrator {
       adapters: this.adapters,
       fallbackExecutor: this.fallbackExecutor,
       agentTypes: Array.from(this.agentDefinitions.keys()),
+      mailbox: this.mailbox,
       loadAgentDefinition: (type: string) => {
         const def = this.agentDefinitions.get(type);
         if (!def) throw new Error(`Agent "${type}" not found`);
@@ -171,7 +348,7 @@ class Orchestrator {
         return true;
       },
       workspaceDir,
-      onStreamText: (text: string) => {
+      onStreamText: quiet ? undefined : (text: string) => {
         process.stdout.write(text);
       },
     };
@@ -182,20 +359,75 @@ class Orchestrator {
       strategy,
     }, budget);
 
-    console.log("\n--- Committee Result ---");
-    console.log(`Status: ${result.status}`);
-    console.log(`Strategy: ${result.strategy}`);
-    console.log(`Members: ${result.members.length}`);
-    console.log(`Total cost: $${result.totalCost.toFixed(4)}`);
-    console.log(`Total steps: ${result.totalSteps}`);
-
-    for (const member of result.members) {
-      console.log(`\n[${member.agentType}] ${member.result.status} (${member.result.steps} steps, $${member.result.cost.toFixed(4)})`);
-    }
+    // Render committee result
+    console.log();
+    console.log(renderCommitteeResult({
+      status: result.status,
+      strategy: result.strategy,
+      members: result.members,
+      totalCost: result.totalCost,
+      totalSteps: result.totalSteps,
+      content: result.content,
+    }));
 
     if (result.content) {
       console.log(`\n--- Aggregated Output ---\n${result.content}`);
     }
+  }
+
+  /** Start the HTTP API server */
+  async serve(options: { host?: string; port?: number }): Promise<void> {
+    const apiConfig = this.config.api;
+    const host = options.host ?? apiConfig?.host ?? "127.0.0.1";
+    const port = options.port ?? apiConfig?.port ?? 3100;
+
+    const workspaceDir = path.dirname(path.resolve(this.configPath));
+    const budget = this.config.budget.maxYuan;
+
+    const deps: import("../agent/agent-loop.js").AgentLoopDeps = {
+      adapterSelector: new AdapterSelector(),
+      permissionResolver: new PermissionResolver(this.config.security.requireApproval),
+      costTracker: new CostTracker(budget),
+      concurrencyLimiter: new ConcurrencyLimiter(this.config.security.maxConcurrentAgents),
+      adapters: this.adapters,
+      fallbackExecutor: this.fallbackExecutor,
+      agentTypes: Array.from(this.agentDefinitions.keys()),
+      mailbox: this.mailbox,
+      loadAgentDefinition: (type: string) => {
+        const def = this.agentDefinitions.get(type);
+        if (!def) throw new Error(`Agent "${type}" not found`);
+        return def;
+      },
+      onApprovalRequest: async (_req: { agentType: string; toolName: string; arguments: Record<string, unknown> }) => {
+        return true; // Auto-approve in API mode
+      },
+      workspaceDir,
+    };
+
+    this.apiServer = new ApiServer(this.config, {
+      host,
+      port,
+      authToken: apiConfig?.authToken,
+      cors: apiConfig?.cors ?? true,
+    }, this.agentDefinitions, deps);
+
+    await this.apiServer.start();
+
+    console.log(style.success(`  API server running at http://${host}:${port}`));
+    console.log(style.dim(`  Endpoints: POST /api/tasks, GET /api/tasks/:id, GET /api/tasks/:id/stream`));
+    console.log(style.dim(`  Agents: ${Array.from(this.agentDefinitions.keys()).join(", ")}`));
+    console.log(style.dim(`  Mailbox: ${this.mailbox ? "enabled" : "disabled"}`));
+    console.log();
+    console.log("  Press Ctrl+C to stop");
+
+    // Graceful shutdown
+    const shutdown = async () => {
+      console.log("\nShutting down...");
+      await this.apiServer?.stop();
+      process.exit(0);
+    };
+    process.on("SIGINT", shutdown);
+    process.on("SIGTERM", shutdown);
   }
 }
 
@@ -214,12 +446,15 @@ program
   .argument("<task>", "Task description")
   .option("-c, --config <path>", "Config file path", "orchestrator.yaml")
   .option("-a, --agent <type>", "Agent type to use", "main")
-  .option("-b, --budget <dollars>", "Budget limit in dollars", parseFloat)
-  .action(async (task: string, options: { config: string; agent?: string; budget?: number }) => {
+  .option("-b, --budget <yuan>", "Budget limit in yuan (RMB)", parseFloat)
+  .option("-v, --verbose", "Show full tool arguments and return values")
+  .option("-q, --quiet", "Only show final result, suppress real-time output")
+  .option("-d, --dashboard", "Enable interactive TUI dashboard mode")
+  .action(async (task: string, options: { config: string; agent?: string; budget?: number; verbose?: boolean; quiet?: boolean; dashboard?: boolean }) => {
     const agentsDir = path.join(path.dirname(options.config), ".agents");
     const orchestrator = new Orchestrator(options.config, agentsDir);
     await orchestrator.init();
-    await orchestrator.execute(task, { agent: options.agent, budget: options.budget });
+    await orchestrator.execute(task, { agent: options.agent, budget: options.budget, verbose: options.verbose, quiet: options.quiet, dashboard: options.dashboard });
   });
 
 program
@@ -268,12 +503,28 @@ program
   .option("-c, --config <path>", "Config file path", "orchestrator.yaml")
   .option("-a, --agents <types>", "Comma-separated agent types", "explore,coder,reviewer")
   .option("-s, --strategy <strategy>", "Aggregation strategy: concat, majority, best", "concat")
-  .option("-b, --budget <dollars>", "Budget limit in dollars", parseFloat)
-  .action(async (task: string, options: { config: string; agents?: string; strategy?: string; budget?: number }) => {
+  .option("-b, --budget <yuan>", "Budget limit in yuan (RMB)", parseFloat)
+  .option("-v, --verbose", "Show full tool arguments and return values")
+  .option("-q, --quiet", "Only show final result, suppress real-time output")
+  .option("-d, --dashboard", "Enable interactive TUI dashboard mode")
+  .action(async (task: string, options: { config: string; agents?: string; strategy?: string; budget?: number; verbose?: boolean; quiet?: boolean; dashboard?: boolean }) => {
     const agentsDir = path.join(path.dirname(options.config), ".agents");
     const orchestrator = new Orchestrator(options.config, agentsDir);
     await orchestrator.init();
     await orchestrator.committee(task, options);
+  });
+
+program
+  .command("serve")
+  .description("Start the HTTP API server")
+  .option("-c, --config <path>", "Config file path", "orchestrator.yaml")
+  .option("--host <host>", "Bind host (default: 127.0.0.1)")
+  .option("--port <port>", "Bind port (default: 3100)", parseInt)
+  .action(async (options: { config: string; host?: string; port?: number }) => {
+    const agentsDir = path.join(path.dirname(options.config), ".agents");
+    const orchestrator = new Orchestrator(options.config, agentsDir);
+    await orchestrator.init();
+    await orchestrator.serve(options);
   });
 
 program.parse();

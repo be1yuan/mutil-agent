@@ -107,7 +107,18 @@ function normalizeResponse(
         name: block.name,
         arguments: block.input as Record<string, unknown>,
       });
+    } else if (block.type === "web_search_tool_result") {
+      // Native web search results from the provider API.
+      // Extract readable text from search results so they're visible in the output.
+      const results = (block as any).content;
+      if (Array.isArray(results)) {
+        const searchLines = results.map((r: any) =>
+          `- ${r.title ?? "(no title)"}: ${r.url ?? ""}`
+        );
+        content.push(`[web search results]\n${searchLines.join("\n")}`);
+      }
     }
+    // server_tool_use blocks are handled server-side — no client action needed
   }
 
   return {
@@ -126,6 +137,11 @@ function normalizeResponse(
 // ── Adapter implementations ──
 
 function createAnthropicClient(apiKey: string, baseURL: string): Anthropic {
+  // Prevent the SDK from reading ANTHROPIC_AUTH_TOKEN env var and sending it
+  // as a Bearer token. Some providers (e.g. DeepSeek) prioritize Bearer auth
+  // over x-api-key, which causes 401 errors when ANTHROPIC_AUTH_TOKEN is set
+  // to a different provider's key.
+  delete process.env.ANTHROPIC_AUTH_TOKEN;
   return new Anthropic({ apiKey, baseURL });
 }
 
@@ -133,16 +149,19 @@ class BaseAnthropicAdapter implements ModelAdapter {
   readonly provider: ModelProvider;
   protected client: Anthropic;
   private info: ModelInfo;
+  private nativeSearch: boolean;
 
   constructor(
     provider: ModelProvider,
     apiKey: string,
     baseURL: string,
-    info: ModelInfo
+    info: ModelInfo,
+    nativeSearch = false
   ) {
     this.provider = provider;
     this.client = createAnthropicClient(apiKey, baseURL);
     this.info = info;
+    this.nativeSearch = nativeSearch;
   }
 
   async chat(params: ChatParams): Promise<ChatResponse> {
@@ -163,17 +182,29 @@ class BaseAnthropicAdapter implements ModelAdapter {
 
   /**
    * Build Anthropic SDK request params from our ChatParams.
+   * When nativeSearch is enabled, injects a provider-native web_search tool
+   * so the model can search the web without our custom WebSearch tool.
    */
   private buildRequestParams(params: ChatParams): Anthropic.Messages.MessageCreateParams {
+    const tools: Anthropic.Messages.Tool[] = params.tools?.map((t) => ({
+      name: t.name,
+      description: t.description,
+      input_schema: t.parameters as Anthropic.Messages.Tool.InputSchema,
+    })) ?? [];
+
+    if (this.nativeSearch) {
+      tools.push({
+        type: "web_search_20250305",
+        name: "web_search",
+        max_uses: 5,
+      } as unknown as Anthropic.Messages.Tool);
+    }
+
     return {
       model: params.model,
       system: params.system,
       messages: toAnthropicMessages(params.messages),
-      tools: params.tools?.map((t) => ({
-        name: t.name,
-        description: t.description,
-        input_schema: t.parameters as Anthropic.Messages.Tool.InputSchema,
-      })),
+      tools: tools.length > 0 ? tools : undefined,
       temperature: params.temperature,
       max_tokens: params.maxTokens ?? 4096,
     };
@@ -318,7 +349,7 @@ class BaseAnthropicAdapter implements ModelAdapter {
 // ── Concrete adapters ──
 
 export class DeepSeekAdapter extends BaseAnthropicAdapter {
-  constructor(apiKey: string) {
+  constructor(apiKey: string, nativeSearch = false) {
     super("deepseek", apiKey, "https://api.deepseek.com/anthropic", {
       name: "deepseek-v4-pro",
       provider: "deepseek",
@@ -330,7 +361,7 @@ export class DeepSeekAdapter extends BaseAnthropicAdapter {
         jsonMode: true,
         thinking: true,
       },
-    });
+    }, nativeSearch);
   }
 }
 
@@ -352,7 +383,7 @@ export class GLMAdapter extends BaseAnthropicAdapter {
 }
 
 export class MiMoAdapter extends BaseAnthropicAdapter {
-  constructor(apiKey: string) {
+  constructor(apiKey: string, nativeSearch = false) {
     // MiMo's Anthropic-compatible endpoint does NOT use the standard
     // x-api-key header. It supports two auth methods:
     //   方式一: api-key: $MIMO_API_KEY
@@ -372,7 +403,7 @@ export class MiMoAdapter extends BaseAnthropicAdapter {
         jsonMode: true,
         thinking: true,
       },
-    });
+    }, nativeSearch);
     // Re-create client with custom fetch to control auth headers
     this.client = new Anthropic({
       apiKey: "dummy",

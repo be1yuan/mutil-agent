@@ -68,11 +68,11 @@ class Orchestrator {
     // Create adapters
     for (const [provider, providerConfig] of Object.entries(config.providers)) {
       if (provider === "deepseek") {
-        this.adapters.set(provider as ModelProvider, new DeepSeekAdapter(providerConfig.apiKey));
+        this.adapters.set(provider as ModelProvider, new DeepSeekAdapter(providerConfig.apiKey, providerConfig.nativeSearch));
       } else if (provider === "zhipu") {
         this.adapters.set(provider as ModelProvider, new GLMAdapter(providerConfig.apiKey));
       } else if (provider === "mimo") {
-        this.adapters.set(provider as ModelProvider, new MiMoAdapter(providerConfig.apiKey));
+        this.adapters.set(provider as ModelProvider, new MiMoAdapter(providerConfig.apiKey, providerConfig.nativeSearch));
       }
     }
 

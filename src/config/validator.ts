@@ -7,6 +7,7 @@ const ProviderConfigSchema = z.object({
   apiKey: z.string().min(1, "API Key is required"),
   baseURL: z.string().url("Must be a valid URL"),
   defaultModel: z.string().min(1, "Default model is required"),
+  nativeSearch: z.boolean().optional(),
 });
 
 const FallbackConfigSchema = z.object({

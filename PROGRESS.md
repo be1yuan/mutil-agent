@@ -1,4 +1,4 @@
-# Multi-Agent Orchestrator - 开发进度
+o# Multi-Agent Orchestrator - 开发进度
 
 > 基于 DESIGN-v6 轻量自编排架构
 
@@ -368,6 +368,36 @@ pnpm dev run "分析代码库" --agent explore
 | 主 Dashboard 组件 | `src/cli/dashboard/app.tsx` | ✅ 已完成 | 四区域布局 + 事件驱动 + stream 缓冲 + approval useInput + done 自动退出 |
 | CLI --dashboard 标志 | `src/cli/main.ts` | ✅ 已完成 | `run` 支持 -d/--dashboard；committee 提示不支持 |
 | Dashboard EventBridge 测试 | `src/cli/dashboard/event-bridge.test.ts` | ✅ 已完成 | 16 个测试用例全通过（含审批流 + budget 节流） |
+
+## 2026-04-30: 原生 Web Search + 认证修复
+
+### 原生搜索（Provider-Native Web Search）
+
+| 属性 | 说明 |
+|------|------|
+| 功能 | DeepSeek/MiMo API 内置 `web_search` 工具，服务端执行搜索，无需自定义 DuckDuckGo 抓取 |
+| 配置 | `orchestrator.yaml` 中 provider 级别 `nativeSearch: true` |
+| 工具格式 | `{ type: "web_search_20250305", name: "web_search", max_uses: 5 }` |
+| 降级策略 | 自定义 `WebSearch` 工具（DuckDuckGo）始终可用作为 fallback |
+| 搜索结果 | `normalizeResponse` 解析 `web_search_tool_result` 内容块，提取标题+URL |
+
+**改动文件**:
+
+| 文件 | 改动 |
+|------|------|
+| `src/config/types.ts` | `ProviderConfig` 新增 `nativeSearch?: boolean` |
+| `src/config/validator.ts` | Zod schema 新增 `nativeSearch: z.boolean().optional()` |
+| `src/adapters/anthropic-client.ts` | `BaseAnthropicAdapter` 新增 `nativeSearch` 字段；`buildRequestParams` 注入原生搜索工具；`normalizeResponse` 解析搜索结果块 |
+| `src/cli/main.ts` | 创建 adapter 时传递 `providerConfig.nativeSearch` |
+| `orchestrator.yaml` | deepseek/mimo 启用 `nativeSearch: true` |
+
+### 认证修复（ANTHROPIC_AUTH_TOKEN 冲突）
+
+**问题**: 系统环境变量 `ANTHROPIC_AUTH_TOKEN` 被设置为 MiMo key。Anthropic SDK 自动读取它并作为 `authorization: Bearer` 头发送。DeepSeek API 优先使用 Bearer 认证而非 `x-api-key`，导致 401。
+
+**修复**: `createAnthropicClient()` 中 `delete process.env.ANTHROPIC_AUTH_TOKEN`，阻止 SDK 注入无关的 Bearer token。
+
+**改动文件**: `src/adapters/anthropic-client.ts` (createAnthropicClient 函数)
 
 ## v1.0 计划 (+3-4周)
 

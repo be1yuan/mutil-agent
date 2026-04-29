@@ -4,6 +4,8 @@ export interface ProviderConfig {
   apiKey: string;
   baseURL: string;
   defaultModel: string;
+  /** Enable provider-native web search tool (e.g. DeepSeek/MiMo web_search) */
+  nativeSearch?: boolean;
 }
 
 export interface FallbackConfig {

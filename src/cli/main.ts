@@ -123,9 +123,14 @@ class Orchestrator {
     const dashboard = options.dashboard ?? false;
     const workspaceDir = path.dirname(path.resolve(this.configPath));
 
+    // Determine if the selected provider uses native web search
+    const defaultProvider = definition.provider ?? "deepseek";
+    const providerConf = this.config.providers[defaultProvider];
+    const nativeSearch = providerConf?.nativeSearch === true;
+
     // Dashboard mode: use ink TUI
     if (dashboard) {
-      await this.executeWithDashboard(task, definition, budget, agentType, workspaceDir);
+      await this.executeWithDashboard(task, definition, budget, agentType, workspaceDir, nativeSearch, defaultProvider);
       return;
     }
 
@@ -147,6 +152,7 @@ class Orchestrator {
       fallbackExecutor: this.fallbackExecutor,
       agentTypes: Array.from(this.agentDefinitions.keys()),
       mailbox: this.mailbox,
+      nativeSearch,
       loadAgentDefinition: (type: string) => {
         const def = this.agentDefinitions.get(type);
         if (!def) throw new Error(`Agent "${type}" not found`);
@@ -223,7 +229,9 @@ class Orchestrator {
     definition: AgentDefinition,
     budget: number,
     agentType: string,
-    workspaceDir: string
+    workspaceDir: string,
+    nativeSearch: boolean,
+    provider: string
   ): Promise<void> {
     // Lazy-load ink and React to avoid overhead when not using dashboard
     const { render } = await import("ink");
@@ -243,6 +251,7 @@ class Orchestrator {
       fallbackExecutor: this.fallbackExecutor,
       agentTypes: Array.from(this.agentDefinitions.keys()),
       mailbox: this.mailbox,
+      nativeSearch,
       loadAgentDefinition: (type: string) => {
         const def = this.agentDefinitions.get(type);
         if (!def) throw new Error(`Agent "${type}" not found`);
@@ -258,15 +267,26 @@ class Orchestrator {
     // Wrap deps with bridge callbacks
     const deps = bridge.createDeps(baseDeps);
 
+    // Enter alternate screen buffer to prevent repeated frame output on Windows.
+    // Ink's built-in alternate screen may not work on all Windows terminals.
+    const useAltScreen = process.stdout.isTTY;
+    if (useAltScreen) {
+      process.stdout.write("\x1b[?1049h"); // Enter alternate screen
+      process.stdout.write("\x1b[2J");      // Clear screen
+      process.stdout.write("\x1b[H");       // Move cursor to top-left
+    }
+
     // Render Dashboard UI
     const { unmount, waitUntilExit } = render(
       React.createElement(App, {
         bridge,
         agentType,
         model: definition.model,
+        provider,
         budget,
         maxSteps: definition.maxSteps,
-      })
+      }),
+      { patchConsole: false }
     );
 
     // Run agent loop in background
@@ -278,6 +298,12 @@ class Orchestrator {
 
       // Wait for ink to finish (App calls exit() after delay)
       await waitUntilExit();
+      unmount();
+
+      // Restore main screen buffer
+      if (useAltScreen) {
+        process.stdout.write("\x1b[?1049l"); // Leave alternate screen
+      }
 
       // Print final result in standard format after dashboard exits
       console.log();
@@ -290,6 +316,13 @@ class Orchestrator {
       const msg = err instanceof Error ? err.message : String(err);
       bridge.emitDone("error", 0, 0, msg);
       await waitUntilExit();
+      unmount();
+
+      // Restore main screen buffer
+      if (useAltScreen) {
+        process.stdout.write("\x1b[?1049l");
+      }
+
       console.error(`Error: ${msg}`);
     }
   }
@@ -329,6 +362,9 @@ class Orchestrator {
 
     const workspaceDir = path.dirname(path.resolve(this.configPath));
 
+    // In committee mode, check if any provider has nativeSearch enabled
+    const nativeSearch = Object.values(this.config.providers).some(p => p.nativeSearch === true);
+
     const deps = {
       adapterSelector: new AdapterSelector(),
       permissionResolver: new PermissionResolver(this.config.security.requireApproval),
@@ -338,6 +374,7 @@ class Orchestrator {
       fallbackExecutor: this.fallbackExecutor,
       agentTypes: Array.from(this.agentDefinitions.keys()),
       mailbox: this.mailbox,
+      nativeSearch,
       loadAgentDefinition: (type: string) => {
         const def = this.agentDefinitions.get(type);
         if (!def) throw new Error(`Agent "${type}" not found`);
@@ -383,6 +420,7 @@ class Orchestrator {
 
     const workspaceDir = path.dirname(path.resolve(this.configPath));
     const budget = this.config.budget.maxYuan;
+    const nativeSearch = Object.values(this.config.providers).some(p => p.nativeSearch === true);
 
     const deps: import("../agent/agent-loop.js").AgentLoopDeps = {
       adapterSelector: new AdapterSelector(),
@@ -393,6 +431,7 @@ class Orchestrator {
       fallbackExecutor: this.fallbackExecutor,
       agentTypes: Array.from(this.agentDefinitions.keys()),
       mailbox: this.mailbox,
+      nativeSearch,
       loadAgentDefinition: (type: string) => {
         const def = this.agentDefinitions.get(type);
         if (!def) throw new Error(`Agent "${type}" not found`);

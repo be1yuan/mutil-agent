@@ -43,6 +43,8 @@ export interface AgentLoopDeps {
   getStreamPrefix?: (agentType: string) => string;
   /** File mailbox instance (if enabled) */
   mailbox?: Mailbox;
+  /** When true, the provider uses native web search — exclude custom WebSearch tool */
+  nativeSearch?: boolean;
 
   // ── Lifecycle callbacks (optional, for terminal visualization) ──
 
@@ -95,6 +97,9 @@ export class AgentLoop {
 
       // 1. Select model provider
       const provider = this.deps.adapterSelector.select(task, definition);
+
+      // Count this iteration as a step (even if the model returns content without tool calls)
+      steps++;
 
       // 1b. Pre-flight budget check: estimate worst-case cost
       const maxTokens = definition.maxTokensPerStep ?? 4096;
@@ -174,7 +179,7 @@ export class AgentLoop {
       // 2. Cost tracking
       this.deps.costTracker.record(response.usage, provider);
       this.deps.onBudgetUpdate?.(this.deps.costTracker.spent, this.deps.costTracker.remaining);
-      if (this.deps.costTracker.spent > budget) {
+      if (this.deps.costTracker.spent >= budget) {
         logger.warn("agent.budget_exceeded", {
           agentType: definition.agentType,
           spent: this.deps.costTracker.spent,
@@ -251,7 +256,6 @@ export class AgentLoop {
         })),
       });
 
-      steps++;
     }
 
     logger.warn("agent.max_steps_reached", {
@@ -278,6 +282,12 @@ export class AgentLoop {
         // BashPermission object — Bash tool is allowed, matching happens at runtime
         allowed.push(name);
       }
+    }
+    // When nativeSearch is enabled, the provider injects its own web_search tool.
+    // Remove the custom WebSearch to avoid the model calling the broken DuckDuckGo version.
+    if (this.deps.nativeSearch) {
+      const idx = allowed.indexOf("WebSearch");
+      if (idx !== -1) allowed.splice(idx, 1);
     }
     const agentTypes = this.deps.agentTypes ?? [];
     return getAllowedTools(allowed, undefined, agentTypes);
@@ -318,7 +328,11 @@ export class AgentLoop {
 
     // task tool: spawn sub-agent
     if (tc.name === "task") {
-      return await this.spawnSubAgent(tc.arguments as unknown as SubAgentArgs, definition);
+      const args = tc.arguments as Record<string, unknown>;
+      if (typeof args.agentType !== "string" || typeof args.task !== "string") {
+        return `[tool error] task: missing required fields (agentType, task)`;
+      }
+      return await this.spawnSubAgent(args as unknown as SubAgentArgs, definition);
     }
 
     // Other tools: execute directly

@@ -42,6 +42,7 @@ interface AppProps {
   bridge: DashboardEventBridge;
   agentType: string;
   model: string;
+  provider: string;
   budget: number;
   maxSteps: number;
 }
@@ -52,6 +53,7 @@ export function App({
   bridge,
   agentType,
   model,
+  provider,
   budget,
   maxSteps,
 }: AppProps) {
@@ -320,7 +322,7 @@ export function App({
           maxSteps={maxSteps}
           agents={agents}
         />
-        <CostGauge spent={spent} budget={budget} provider={model} />
+        <CostGauge spent={spent} budget={budget} provider={provider} />
       </Box>
 
       {/* Middle: Output */}

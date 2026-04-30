@@ -24,7 +24,7 @@ export function StatusBar({
   agents,
 }: StatusBarProps) {
   return (
-    <Box flexDirection="column" width="50%" borderStyle="single" borderColor="cyan" paddingLeft={1}>
+    <Box flexDirection="column" width="50%" borderStyle="classic" borderColor="cyan" paddingLeft={1}>
       <Box flexDirection="column">
         <AgentTree agents={agents} mainAgentType={agentType} />
         <Text dimColor>

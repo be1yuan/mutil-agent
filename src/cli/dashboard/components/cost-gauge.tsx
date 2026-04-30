@@ -28,7 +28,7 @@ export function CostGauge({ spent, budget, provider }: CostGaugeProps) {
   else barColor = "green";
 
   return (
-    <Box flexDirection="column" width="50%" borderStyle="single" borderColor="yellow" paddingLeft={1}>
+    <Box flexDirection="column" width="50%" borderStyle="classic" borderColor="yellow" paddingLeft={1}>
       <Text>
         {" Spent: "}
         <Text color={barColor}>¥{spent.toFixed(4)}</Text>

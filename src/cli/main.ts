@@ -475,9 +475,9 @@ class Orchestrator {
 const program = new Command();
 
 program
-  .name("multi-agent")
+  .name("agent-orch")
   .description("Lightweight self-orchestrating multi-agent CLI")
-  .version("0.1.0");
+  .version("0.6.0");
 
 program
   .command("run")
@@ -524,10 +524,58 @@ program
         console.log(`  ${agentType}: ${loaded.definition.model}`);
       }
 
-      // Optional dependency check
+      // Optional dependency checks
+      const checks: { label: string; status: "ok" | "warn" | "info" | "error"; message: string }[] = [];
+
+      // ink + react (dashboard)
+      try {
+        await import("ink");
+        await import("react");
+        checks.push({ label: "ink + react", status: "ok", message: "Dashboard support available" });
+      } catch {
+        checks.push({ label: "ink + react", status: "warn", message: "Not installed — dashboard requires `npm install ink react`" });
+      }
+
+      // cheerio (WebFetch HTML extraction)
       if (!isCheerioAvailable()) {
-        console.log("\n  [hint] cheerio not installed — WebFetch will use regex-based extraction.");
-        console.log("         Install for better results: npm install cheerio");
+        checks.push({ label: "cheerio", status: "info", message: "Not installed — WebFetch will use regex-based extraction. Install: `npm install cheerio`" });
+      } else {
+        checks.push({ label: "cheerio", status: "ok", message: "WebFetch HTML extraction enhanced" });
+      }
+
+      // Node.js version
+      const nodeVersion = process.versions.node.split(".").map(Number);
+      if (nodeVersion[0] >= 20) {
+        checks.push({ label: "Node.js", status: "ok", message: `v${process.version} (>= 20)` });
+      } else {
+        checks.push({ label: "Node.js", status: "error", message: `v${process.version} — requires >= 20` });
+      }
+
+      // Git (worktree isolation)
+      try {
+        const { execSync } = await import("node:child_process");
+        execSync("git --version", { stdio: "pipe" });
+        checks.push({ label: "git", status: "ok", message: "Worktree isolation available" });
+      } catch {
+        checks.push({ label: "git", status: "warn", message: "Not found — worktree isolation unavailable" });
+      }
+
+      // .env file
+      const envPath = path.join(path.dirname(options.config), ".env");
+      try {
+        const { access } = await import("node:fs/promises");
+        await access(envPath);
+        checks.push({ label: ".env", status: "ok", message: "Environment file present" });
+      } catch {
+        checks.push({ label: ".env", status: "warn", message: "Not found — API keys may be missing" });
+      }
+
+      if (checks.length > 0) {
+        console.log("\nEnvironment checks:");
+        for (const check of checks) {
+          const icon = check.status === "ok" ? "✅" : check.status === "warn" ? "⚠️ " : check.status === "error" ? "🔴" : "ℹ️ ";
+          console.log(`  ${icon} ${check.label} — ${check.message}`);
+        }
       }
     } catch (error) {
       console.error(`Validation failed: ${(error as Error).message}`);

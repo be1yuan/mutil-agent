@@ -12,12 +12,14 @@
  *   GET    /api/cost            — Cost tracker info
  */
 
+import crypto from "node:crypto";
 import http from "node:http";
 import type { ServerResponse, IncomingMessage } from "node:http";
 import type { OrchestratorConfig } from "../config/types.js";
 import type { AgentDefinition } from "../agent/types.js";
 import type { CostTracker } from "../observability/cost-tracker.js";
 import type { Mailbox } from "../agent/mailbox.js";
+import type { MetricsRegistry } from "../observability/metrics.js";
 import { TaskManager, type SubmitTaskRequest } from "./task-manager.js";
 import { AgentLoopDeps } from "../agent/agent-loop.js";
 import { initSSE } from "./sse.js";
@@ -78,7 +80,8 @@ export class ApiServer {
     private config: OrchestratorConfig,
     private opts: ServerOpts,
     private agentDefinitions: Map<string, AgentDefinition>,
-    private deps: AgentLoopDeps
+    private deps: AgentLoopDeps,
+    private metrics?: MetricsRegistry
   ) {}
 
   /** Start the HTTP server */
@@ -144,16 +147,17 @@ export class ApiServer {
     }
 
     // Rate limiting
-    const clientIp = req.socket.remoteAddress ?? "unknown";
+    const rawIp = req.socket.remoteAddress ?? "unknown";
+    const clientIp = rawIp.replace(/^::ffff:/, "");
     if (!this.rateLimiter.allow(clientIp)) {
       this.json(res, 429, { error: "Too many requests" });
       return;
     }
 
-    // Authentication
-    if (this.opts.authToken) {
+    // Authentication (skip for /api/metrics — Prometheus scrapers don't carry tokens)
+    if (this.opts.authToken && path !== "/api/metrics") {
       const auth = req.headers.authorization;
-      if (auth !== `Bearer ${this.opts.authToken}`) {
+      if (!auth || !this.timingSafeCompare(auth, `Bearer ${this.opts.authToken}`)) {
         this.json(res, 401, { error: "Unauthorized" });
         return;
       }
@@ -196,6 +200,18 @@ export class ApiServer {
         return;
       }
 
+      // Prometheus metrics
+      if (path === "/api/metrics" && method === "GET") {
+        if (!this.metrics) {
+          this.json(res, 404, { error: "Metrics not enabled" });
+          return;
+        }
+        const text = this.metrics.export();
+        res.writeHead(200, { "Content-Type": "text/plain; version=0.0.4" });
+        res.end(text);
+        return;
+      }
+
       // Submit task
       if (path === "/api/tasks" && method === "POST") {
         let body: string;
@@ -208,7 +224,13 @@ export class ApiServer {
           }
           throw err;
         }
-        const request = JSON.parse(body) as SubmitTaskRequest;
+        let request: SubmitTaskRequest;
+        try {
+          request = JSON.parse(body);
+        } catch {
+          this.json(res, 400, { error: "Invalid JSON" });
+          return;
+        }
 
         if (!request.task) {
           this.json(res, 400, { error: "task is required" });
@@ -304,6 +326,11 @@ export class ApiServer {
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
     res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  }
+
+  private timingSafeCompare(a: string, b: string): boolean {
+    if (a.length !== b.length) return false;
+    return crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
   }
 
   private readBody(req: IncomingMessage): Promise<string> {

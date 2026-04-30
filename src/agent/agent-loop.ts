@@ -91,6 +91,9 @@ export class AgentLoop {
       task: task.slice(0, 200),
     });
 
+    let consecutiveErrors = 0;
+    const MAX_CONSECUTIVE_ERRORS = 3;
+
     while (steps < definition.maxSteps) {
       // Notify: step start
       this.deps.onStepStart?.(steps, definition.agentType);
@@ -209,6 +212,7 @@ export class AgentLoop {
 
       // 4. Execute tools
       const toolResults: { tool_use_id: string; content: string }[] = [];
+      let stepHasError = false;
 
       for (const tc of response.toolCalls) {
         // Notify: tool start
@@ -219,13 +223,31 @@ export class AgentLoop {
 
         // Notify: tool complete
         const toolDuration = Date.now() - toolStart;
-        const toolSuccess = !result.startsWith("[denied]") && !result.startsWith("[tool error]");
+        const toolSuccess = !result.startsWith("[denied]") && !result.startsWith("[user denied]") && !result.startsWith("[tool error]");
         this.deps.onToolComplete?.(definition.agentType, tc.name, toolDuration, toolSuccess);
+
+        if (!toolSuccess) {
+          stepHasError = true;
+        }
 
         toolResults.push({
           tool_use_id: tc.id,
           content: result,
         });
+      }
+
+      // Track consecutive errors and inject hint if threshold exceeded
+      if (stepHasError) {
+        consecutiveErrors++;
+        if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+          logger.warn("agent.consecutive_errors", {
+            agentType: definition.agentType,
+            consecutiveErrors,
+          });
+          // Hint will be injected as a separate message after tool results
+        }
+      } else {
+        consecutiveErrors = 0;
       }
 
       // Add assistant message with tool_use blocks
@@ -255,6 +277,14 @@ export class AgentLoop {
           content: r.content,
         })),
       });
+
+      // Inject consecutive error hint as a separate user message
+      if (stepHasError && consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+        history.push({
+          role: "user",
+          content: `[system] You have had ${consecutiveErrors} consecutive errors. Consider changing your approach, using different tools, or asking for clarification.`,
+        });
+      }
 
     }
 

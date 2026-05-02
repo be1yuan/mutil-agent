@@ -28,6 +28,7 @@ import {
   renderResult,
   renderCommitteeResult,
 } from "./status-renderer.js";
+import { initProject } from "./init.js";
 import { summarizeToolArgs, style } from "./ansi.js";
 import { DashboardEventBridge } from "./dashboard/event-bridge.js";
 import type { ModelAdapter } from "../adapters/types.js";
@@ -477,7 +478,7 @@ const program = new Command();
 program
   .name("agent-orch")
   .description("Lightweight self-orchestrating multi-agent CLI")
-  .version("0.6.0");
+  .version("1.0.0");
 
 program
   .command("run")
@@ -612,6 +613,14 @@ program
     const orchestrator = new Orchestrator(options.config, agentsDir);
     await orchestrator.init();
     await orchestrator.serve(options);
+  });
+
+program
+  .command("init")
+  .description("Scaffold a new agent-orch project in the current directory")
+  .option("--dashboard", "Include ink + react dependencies for TUI dashboard mode")
+  .action(async (options: { dashboard?: boolean }) => {
+    await initProject({ dashboard: options.dashboard });
   });
 
 program.parse();

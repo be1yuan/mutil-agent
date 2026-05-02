@@ -1,6 +1,6 @@
 {
   "name": "agent-orch",
-  "version": "0.6.0",
+  "version": "1.0.0",
   "description": "Lightweight self-orchestrating multi-agent CLI for DeepSeek + GLM + MiMo",
   "type": "module",
   "main": "dist/cli/main.js",

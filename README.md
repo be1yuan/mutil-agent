@@ -16,8 +16,26 @@
 
 ## 快速开始
 
+### 全局安装（推荐）
+
 ```bash
-# 安装依赖
+npm install -g agent-orch
+
+# 在项目目录初始化
+mkdir my-project && cd my-project
+agent-orch init
+
+# 编辑 .env 添加 API 密钥
+cp .env.example .env
+
+# 执行任务
+agent-orch run "修复 auth.ts 中的登录 bug"
+```
+
+### 本地开发
+
+```bash
+git clone <repo-url> && cd agent-orch
 npm install
 
 # 设置 API 密钥
@@ -39,7 +57,8 @@ npm run dev validate
 
 | 命令 | 说明 |
 |------|------|
-| `run <task>` | 执行任务（`--agent`, `--budget`, `--verbose`, `--quiet`）|
+| `init` | 在当前目录初始化新项目（`--dashboard` 启用 TUI 仪表盘依赖）|
+| `run <task>` | 执行任务（`--agent`, `--budget`, `--verbose`, `--quiet`, `--dashboard`）|
 | `list-agents` | 列出可用 Agent |
 | `validate` | 验证配置和 Agent 定义 |
 | `committee <task>` | 多 Agent 并行执行（`--agents`, `--strategy`, `--budget`）|
@@ -283,10 +302,21 @@ orchestrator.yaml     全局配置
 npm install cheerio
 ```
 
+## Docker
+
+```bash
+docker build -t agent-orch .
+
+docker run \
+  -e DEEPSEEK_API_KEY=sk-... \
+  -v $(pwd):/workspace \
+  -w /workspace \
+  agent-orch run "fix the auth bug"
+```
+
 ## 环境要求
 
 - Node.js >= 20
-- pnpm 或 npm
 
 ## 许可证
 

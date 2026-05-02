@@ -13,7 +13,7 @@ providers:
     defaultModel: glm-5.1
   mimo:
     apiKey: ${MIMO_API_KEY}
-    baseURL: https://api.mimo.com/anthropic
+    baseURL: https://api.xiaomimimo.com/anthropic
     defaultModel: mimo-v2-pro
 
 fallback:

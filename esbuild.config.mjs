@@ -4,9 +4,8 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-// Note: No shebang banner for ESM format — Node.js doesn't accept
-// shebangs in ES modules. npm bin handles the executable entry point
-// automatically. For direct execution, use `node dist/cli/main.js`.
+// esbuild preserves the shebang from src/cli/main.ts automatically.
+// Node.js strips hashbangs before parsing, so they work in ESM too.
 
 await build({
   entryPoints: ["src/cli/main.ts"],

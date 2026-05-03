@@ -69,7 +69,7 @@ function toAnthropicMessages(
             : String(msg.content),
       });
     } else if (msg.role === "assistant") {
-      // Assistant message
+      // Assistant message — must preserve thinking blocks for DeepSeek/Anthropic round-trip
       result.push({
         role: "assistant",
         content: typeof msg.content === "string"
@@ -78,6 +78,16 @@ function toAnthropicMessages(
             ? msg.content.map((b) => {
                 if (b.type === "tool_use") {
                   return { type: "tool_use" as const, id: b.id, name: b.name, input: b.input };
+                }
+                if (b.type === "thinking") {
+                  // DeepSeek/Anthropic require thinking blocks to be passed back verbatim
+                  const tb = b as import("./types.js").ThinkingBlock;
+                  const block: Anthropic.Messages.ThinkingBlockParam = {
+                    type: "thinking" as const,
+                    thinking: tb.thinking,
+                    ...(tb.signature ? { signature: tb.signature } : {}),
+                  } as Anthropic.Messages.ThinkingBlockParam;
+                  return block;
                 }
                 return { type: "text" as const, text: b.text };
               })
@@ -97,15 +107,32 @@ function normalizeResponse(
 ): ChatResponse {
   const content: string[] = [];
   const toolCalls: ChatResponse["toolCalls"] = [];
+  // Preserve thinking blocks for round-trip (DeepSeek/Anthropic require them)
+  const contentBlocks: import("./types.js").ContentBlock[] = [];
 
   for (const block of response.content) {
     if (block.type === "text") {
       content.push(block.text);
+      contentBlocks.push({ type: "text", text: block.text });
     } else if (block.type === "tool_use") {
       toolCalls.push({
         id: block.id,
         name: block.name,
         arguments: block.input as Record<string, unknown>,
+      });
+      contentBlocks.push({
+        type: "tool_use",
+        id: block.id,
+        name: block.name,
+        input: block.input as Record<string, unknown>,
+      });
+    } else if (block.type === "thinking") {
+      // Preserve thinking block with signature for round-trip
+      const thinkingBlock = block as { type: "thinking"; thinking: string; signature?: string };
+      contentBlocks.push({
+        type: "thinking",
+        thinking: thinkingBlock.thinking,
+        signature: thinkingBlock.signature,
       });
     } else if (block.type === "web_search_tool_result") {
       // Native web search results from the provider API.
@@ -124,6 +151,7 @@ function normalizeResponse(
   return {
     content: content.length > 0 ? content.join("\n") : null,
     toolCalls,
+    contentBlocks,
     usage: {
       inputTokens: response.usage.input_tokens,
       outputTokens: response.usage.output_tokens,
@@ -142,6 +170,9 @@ function createAnthropicClient(apiKey: string, baseURL: string): Anthropic {
   // over x-api-key, which causes 401 errors when ANTHROPIC_AUTH_TOKEN is set
   // to a different provider's key.
   delete process.env.ANTHROPIC_AUTH_TOKEN;
+  // Diagnostic: log masked API key to help debug auth issues
+  const masked = apiKey.length > 10 ? apiKey.slice(0, 6) + "..." + apiKey.slice(-4) : "***";
+  console.log(`  [adapter] ${baseURL.split("/").slice(-2).join("/")} key=${masked}`);
   return new Anthropic({ apiKey, baseURL });
 }
 
@@ -228,6 +259,7 @@ class BaseAnthropicAdapter implements ModelAdapter {
         if (block.type === "tool_use" && block.id && block.name) {
           currentToolCall = { id: block.id, name: block.name, inputJson: "" };
         }
+        // thinking blocks are accumulated via finalMessage.content (includes signatures)
       } else if (event.type === "content_block_delta") {
         const delta = event.delta as { type: string; text?: string; partial_json?: string };
         if (delta.type === "text_delta" && delta.text) {
@@ -236,6 +268,7 @@ class BaseAnthropicAdapter implements ModelAdapter {
         } else if (delta.type === "input_json_delta" && delta.partial_json && currentToolCall) {
           currentToolCall.inputJson += delta.partial_json;
         }
+        // thinking_delta events are captured by finalMessage, no need to accumulate here
       } else if (event.type === "content_block_stop") {
         if (currentToolCall) {
           toolCalls.push(currentToolCall);
@@ -288,9 +321,31 @@ class BaseAnthropicAdapter implements ModelAdapter {
       }
     }
 
+    // Build contentBlocks with thinking blocks for round-trip.
+    // Prefer finalMessage's content blocks (they include signatures) over
+    // our accumulated stream data.
+    const contentBlocks: import("./types.js").ContentBlock[] = [];
+    for (const block of finalMessage.content) {
+      if (block.type === "thinking") {
+        const tb = block as { type: "thinking"; thinking: string; signature?: string };
+        contentBlocks.push({ type: "thinking", thinking: tb.thinking, signature: tb.signature });
+      } else if (block.type === "text") {
+        contentBlocks.push({ type: "text", text: block.text });
+      } else if (block.type === "tool_use") {
+        contentBlocks.push({
+          type: "tool_use",
+          id: block.id,
+          name: block.name,
+          input: block.input as Record<string, unknown>,
+        });
+      }
+      // Skip web_search_tool_result etc. — not needed for round-trip
+    }
+
     return {
       content: textParts.length > 0 ? textParts.join("") : null,
       toolCalls: parsedToolCalls,
+      contentBlocks,
       usage: {
         inputTokens: finalMessage.usage.input_tokens,
         outputTokens: finalMessage.usage.output_tokens,

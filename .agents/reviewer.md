@@ -1,6 +1,6 @@
 ---
 agentType: reviewer
-model: deepseek-v4-flash
+model: deepseek-v4-pro
 provider: deepseek
 description: Code review specialist that identifies bugs, security issues, and quality problems
 maxSteps: 30

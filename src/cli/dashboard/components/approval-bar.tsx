@@ -19,7 +19,7 @@ export function ApprovalBar({ request, onApprove, onDeny }: ApprovalBarProps) {
   if (!request) {
     // No pending approval — show a minimal bottom border
     return (
-      <Box borderStyle="single" borderColor="white">
+      <Box>
         <Text dimColor>{" Ready"}</Text>
       </Box>
     );
@@ -28,7 +28,7 @@ export function ApprovalBar({ request, onApprove, onDeny }: ApprovalBarProps) {
   const argsSummary = summarizeToolArgs(request.toolName, request.args);
 
   return (
-    <Box flexDirection="column" borderStyle="single" borderColor="magenta">
+    <Box flexDirection="column">
       <Box marginLeft={1}>
         <Text>
           {" Tool: "}

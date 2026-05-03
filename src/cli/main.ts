@@ -2,6 +2,7 @@
 
 import { Command } from "commander";
 import path from "node:path";
+import fs from "node:fs";
 import { loadConfig, loadAgents } from "../config/loader.js";
 import { validateConfig } from "../config/validator.js";
 import { DeepSeekAdapter, GLMAdapter, MiMoAdapter } from "../adapters/anthropic-client.js";
@@ -268,6 +269,19 @@ class Orchestrator {
     // Wrap deps with bridge callbacks
     const deps = bridge.createDeps(baseDeps);
 
+    // Save callback: writes content to a timestamped file in the workspace
+    const onSave = (content: string): string | undefined => {
+      try {
+        const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+        const filePath = path.join(workspaceDir, `output-${ts}.md`);
+        fs.writeFileSync(filePath, content, "utf-8");
+        return filePath;
+      } catch (e) {
+        console.error(`Save failed: ${(e as Error).message}`);
+        return undefined;
+      }
+    };
+
     // Enter alternate screen buffer to prevent repeated frame output on Windows.
     // Ink's built-in alternate screen may not work on all Windows terminals.
     const useAltScreen = process.stdout.isTTY;
@@ -286,6 +300,7 @@ class Orchestrator {
         provider,
         budget,
         maxSteps: definition.maxSteps,
+        onSave,
       }),
       { patchConsole: false }
     );
@@ -294,24 +309,16 @@ class Orchestrator {
     const loop = new AgentLoop(deps);
     try {
       const result = await loop.run(task, definition, budget);
-      // Signal done to dashboard — App will auto-exit via useEffect
+      // Signal done to dashboard — user can review result and save/exit inside dashboard
       bridge.emitDone(result.status, result.steps, result.cost, result.content);
 
-      // Wait for ink to finish (App calls exit() after delay)
+      // Wait for user to press [E]xit in the dashboard
       await waitUntilExit();
       unmount();
 
       // Restore main screen buffer
       if (useAltScreen) {
         process.stdout.write("\x1b[?1049l"); // Leave alternate screen
-      }
-
-      // Print final result in standard format after dashboard exits
-      console.log();
-      console.log(renderResult(result));
-
-      if (result.content) {
-        console.log(`\nContent:\n${result.content}`);
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -321,7 +328,7 @@ class Orchestrator {
 
       // Restore main screen buffer
       if (useAltScreen) {
-        process.stdout.write("\x1b[?1049l");
+        process.stdout.write("\x1b[?1049l"); // Leave alternate screen
       }
 
       console.error(`Error: ${msg}`);
@@ -547,7 +554,7 @@ program
       // Node.js version
       const nodeVersion = process.versions.node.split(".").map(Number);
       if (nodeVersion[0] >= 20) {
-        checks.push({ label: "Node.js", status: "ok", message: `v${process.version} (>= 20)` });
+        checks.push({ label: "Node.js", status: "ok", message: `${process.version} (>= 20)` });
       } else {
         checks.push({ label: "Node.js", status: "error", message: `v${process.version} — requires >= 20` });
       }

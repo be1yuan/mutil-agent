@@ -37,7 +37,14 @@ export interface ToolUseBlock {
   input: Record<string, unknown>;
 }
 
-export type ContentBlock = TextBlock | ToolUseBlock;
+export interface ThinkingBlock {
+  type: "thinking";
+  thinking: string;
+  /** Signature for extended thinking (DeepSeek/Anthropic require this for round-trip) */
+  signature?: string;
+}
+
+export type ContentBlock = TextBlock | ToolUseBlock | ThinkingBlock;
 
 export interface Message {
   role: "user" | "assistant";
@@ -73,6 +80,8 @@ export interface ChatParams {
 export interface ChatResponse {
   content: string | null;
   toolCalls: ToolCall[];
+  /** Full content blocks including thinking — required for round-trip in DeepSeek/Anthropic thinking mode */
+  contentBlocks?: ContentBlock[];
   usage: Usage;
   stopReason: StopReason;
 }

@@ -25,7 +25,7 @@ export function OutputPanel({ lines, maxHeight = 20 }: OutputPanelProps) {
   const visible = lines.slice(-maxHeight);
 
   return (
-    <Box flexDirection="column" borderStyle="single" borderColor="white">
+    <Box flexDirection="column">
       <Box flexDirection="column" marginLeft={1} minHeight={maxHeight}>
         {visible.length === 0 ? (
           <Text dimColor>{"  (waiting for output...)"}</Text>

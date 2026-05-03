@@ -250,23 +250,33 @@ export class AgentLoop {
         consecutiveErrors = 0;
       }
 
-      // Add assistant message with tool_use blocks
-      const assistantBlocks: ContentBlock[] = [];
-      if (response.content) {
-        assistantBlocks.push({ type: "text", text: response.content });
-      }
-      for (const tc of response.toolCalls) {
-        assistantBlocks.push({
-          type: "tool_use",
-          id: tc.id,
-          name: tc.name,
-          input: tc.arguments,
+      // Add assistant message — use contentBlocks if available to preserve
+      // thinking blocks required for DeepSeek/Anthropic round-trip.
+      // If contentBlocks is not provided, fall back to reconstructing from
+      // text content + tool calls (backward compatible).
+      if (response.contentBlocks && response.contentBlocks.length > 0) {
+        history.push({
+          role: "assistant",
+          content: response.contentBlocks,
+        });
+      } else {
+        const assistantBlocks: ContentBlock[] = [];
+        if (response.content) {
+          assistantBlocks.push({ type: "text", text: response.content });
+        }
+        for (const tc of response.toolCalls) {
+          assistantBlocks.push({
+            type: "tool_use",
+            id: tc.id,
+            name: tc.name,
+            input: tc.arguments,
+          });
+        }
+        history.push({
+          role: "assistant",
+          content: assistantBlocks,
         });
       }
-      history.push({
-        role: "assistant",
-        content: assistantBlocks,
-      });
 
       // Add tool results
       history.push({

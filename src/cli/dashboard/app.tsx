@@ -7,11 +7,10 @@
  * ├─────────────────────┴─────────────────────────┤
  * │ (output-panel)                                 │
  * ├────────────────────────────────────────────────┤
- * │ (approval-bar)                                 │
+ * │ (result section — shown when done)             │
+ * ├────────────────────────────────────────────────┤
+ * │ (approval-bar / save prompt)                   │
  * └────────────────────────────────────────────────┘
- *
- * Subscribes to DashboardEventBridge events and translates them
- * into React state updates for real-time rendering.
  */
 
 import React, { useState, useEffect, useCallback, useRef } from "react";
@@ -45,6 +44,8 @@ interface AppProps {
   provider: string;
   budget: number;
   maxSteps: number;
+  /** Called when user chooses to save the result. Returns the saved file path. */
+  onSave?: (content: string) => string | undefined;
 }
 
 // ── Main App component ──
@@ -56,6 +57,7 @@ export function App({
   provider,
   budget,
   maxSteps,
+  onSave,
 }: AppProps) {
   const { exit } = useApp();
 
@@ -70,6 +72,10 @@ export function App({
   >(undefined);
   const [isDone, setIsDone] = useState(false);
   const [finalStatus, setFinalStatus] = useState<string>("");
+  const [finalContent, setFinalContent] = useState<string>("");
+  const [finalSteps, setFinalSteps] = useState(0);
+  const [finalCost, setFinalCost] = useState(0);
+  const [savedPath, setSavedPath] = useState<string | undefined>(undefined);
 
   // Counter for output line IDs
   const lineIdRef = useRef(0);
@@ -95,7 +101,6 @@ export function App({
     (text: string, type: OutputLine["type"] = "stream") => {
       setOutputLines((prev) => {
         const id = ++lineIdRef.current;
-        // Keep at most 500 lines to prevent memory growth
         const next = [...prev, { id, text, type, timestamp: Date.now() }];
         return next.length > 500 ? next.slice(-400) : next;
       });
@@ -112,8 +117,6 @@ export function App({
           const d = event.data as StepEventData;
           setCurrentStep(d.step);
           addLine(`▸ Step ${d.step} [${d.agentType}]`, "step");
-
-          // Update main agent steps
           setAgents((prev) => {
             const next = new Map(prev);
             const existing = next.get(d.agentType);
@@ -195,35 +198,26 @@ export function App({
 
         case "stream": {
           const d = event.data as StreamEventData;
-          // Buffer stream text: append to the last stream line instead of
-          // creating a new line per chunk. Split on newlines to create
-          // separate lines when the model emits line breaks.
           const parts = d.text.split("\n");
           setOutputLines((prev) => {
             let next = [...prev];
             for (let i = 0; i < parts.length; i++) {
               const part = parts[i];
               if (i === 0) {
-                // First part: append to last line if it's a stream line
                 const last = next[next.length - 1];
                 if (last && last.type === "stream") {
-                  next[next.length - 1] = {
-                    ...last,
-                    text: last.text + part,
-                  };
+                  next[next.length - 1] = { ...last, text: last.text + part };
                 } else if (part) {
                   const id = ++lineIdRef.current;
                   next.push({ id, text: part, type: "stream", timestamp: Date.now() });
                 }
               } else {
-                // Subsequent parts (after a newline): always new line
                 if (part || i < parts.length - 1) {
                   const id = ++lineIdRef.current;
                   next.push({ id, text: part, type: "stream", timestamp: Date.now() });
                 }
               }
             }
-            // Trim to max 500 lines
             return next.length > 500 ? next.slice(-400) : next;
           });
           break;
@@ -244,6 +238,9 @@ export function App({
           const d = event.data as DoneEventData;
           setIsDone(true);
           setFinalStatus(d.status);
+          setFinalContent(d.content ?? "");
+          setFinalSteps(d.steps);
+          setFinalCost(d.cost);
           addLine(
             `\n━━━ Task ${d.status.toUpperCase()} ─━━ Steps: ${d.steps} │ Cost: ¥${d.cost.toFixed(4)}`,
             "system"
@@ -254,67 +251,56 @@ export function App({
     };
 
     bridge.on("event", handler);
-    return () => {
-      bridge.off("event", handler);
-    };
+    return () => { bridge.off("event", handler); };
   }, [bridge, addLine]);
 
-  // ── Keyboard input: approval flow ──
+  // ── Keyboard input ──
 
   useInput((input) => {
-    if (!approvalRequest) return;
     const key = input.toLowerCase();
-    if (key === "a") {
-      bridge.resolveApproval(true);
-      setApprovalRequest(undefined);
-      addLine("  ✓ Approved", "system");
-    } else if (key === "d") {
-      bridge.resolveApproval(false);
-      setApprovalRequest(undefined);
-      addLine("  ✗ Denied", "system");
+
+    // Approval flow
+    if (approvalRequest) {
+      if (key === "a") {
+        bridge.resolveApproval(true);
+        setApprovalRequest(undefined);
+        addLine("  ✓ Approved", "system");
+      } else if (key === "d") {
+        bridge.resolveApproval(false);
+        setApprovalRequest(undefined);
+        addLine("  ✗ Denied", "system");
+      }
+      return;
+    }
+
+    // Done flow: save or exit
+    if (isDone) {
+      if (key === "s" && !savedPath && onSave) {
+        const path = onSave(finalContent);
+        if (path) setSavedPath(path);
+      } else if (key === "e") {
+        exit();
+      }
     }
   });
 
-  // ── Auto-exit after done ──
-
-  useEffect(() => {
-    if (!isDone) return;
-    const timer = setTimeout(() => {
-      exit();
-    }, 1200);
-    return () => clearTimeout(timer);
-  }, [isDone, exit]);
-
   // ── Render ──
 
-  if (isDone) {
-    const statusIcon =
-      finalStatus === "success" ? "✓" : finalStatus === "error" ? "✗" : "⚠";
-    const statusColor =
-      finalStatus === "success"
-        ? "green"
-        : finalStatus === "error"
-          ? "red"
-          : "yellow";
+  const statusColor =
+    finalStatus === "success" ? "green" : finalStatus === "error" ? "red" : "yellow";
+  const statusIcon =
+    finalStatus === "success" ? "✓" : finalStatus === "error" ? "✗" : "⚠";
 
-    return (
-      <Box flexDirection="column" paddingX={1}>
-        <Text>
-          {"\n"}
-          <Text bold color={statusColor}>
-            {statusIcon} {finalStatus.toUpperCase()}
-          </Text>
-          {" │ Steps: "}{currentStep} │ Cost: ¥{spent.toFixed(4)}
-        </Text>
-        <Text dimColor>{"  Dashboard session ended."}</Text>
-      </Box>
-    );
-  }
+  // Truncate content for display (show first 30 lines)
+  const contentLines = finalContent ? finalContent.split("\n") : [];
+  const displayLines = contentLines.slice(0, 30);
+  const hasMore = contentLines.length > 30;
+  const canSave = isDone && finalContent && onSave && !savedPath;
 
   return (
-    <Box flexDirection="column" width="100%">
+    <Box flexDirection="column" width="100%" borderStyle="round" borderColor={isDone ? statusColor : "cyan"}>
       {/* Top: Status + Cost */}
-      <Box flexDirection="row">
+      <Box flexDirection="row" width="100%">
         <StatusBar
           agentType={agentType}
           model={model}
@@ -325,14 +311,57 @@ export function App({
         <CostGauge spent={spent} budget={budget} provider={provider} />
       </Box>
 
-      {/* Middle: Output */}
-      <OutputPanel lines={outputLines} />
+      {/* Divider */}
+      <Box width="100%">
+        <Text dimColor>{"─".repeat(60)}</Text>
+      </Box>
 
-      {/* Bottom: Approval */}
-      <ApprovalBar request={approvalRequest} />
+      {/* Middle: Output */}
+      <OutputPanel lines={outputLines} maxHeight={isDone ? 12 : 20} />
+
+      {/* Result section (when done with content) */}
+      {isDone && contentLines.length > 0 && (
+        <>
+          <Box width="100%">
+            <Text dimColor>{"─".repeat(60)}</Text>
+          </Box>
+          <Box flexDirection="column" paddingX={1}>
+            <Text bold color={statusColor}>
+              {" Result"}{finalStatus === "success" ? "" : ` (${finalStatus})`}
+            </Text>
+            {displayLines.map((line, i) => (
+              <Text key={i}>{" "}{line}</Text>
+            ))}
+            {hasMore && (
+              <Text dimColor>{"  ... ("}{contentLines.length}{" lines total)"}</Text>
+            )}
+          </Box>
+        </>
+      )}
+
+      {/* Bottom: Save prompt or status bar */}
+      {isDone ? (
+        <Box width="100%" paddingX={1}>
+          {savedPath ? (
+            <Text color="green">{"  ✓ Saved to: "}{savedPath}{"  │  [E]xit"}</Text>
+          ) : canSave ? (
+            <Text>
+              <Text color="yellow">{"  [S]ave to file"}</Text>
+              {"  │  "}
+              <Text color="gray">"[E]xit"</Text>
+            </Text>
+          ) : (
+            <Text>
+              <Text bold color={statusColor}>{statusIcon} {"Done"}</Text>
+              {" │ Steps: "}{finalSteps}{" │ Cost: ¥"}{finalCost.toFixed(4)}
+              {"  │  "}
+              <Text color="gray">"[E]xit"</Text>
+            </Text>
+          )}
+        </Box>
+      ) : (
+        <ApprovalBar request={approvalRequest} />
+      )}
     </Box>
   );
 }
-
-
-

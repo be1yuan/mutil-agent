@@ -49,7 +49,11 @@ export class FallbackExecutor {
         return await adapter.chat({ ...params, model: currentModel });
       } catch (error) {
         lastError = error as Error;
-        if (!this.isRetryable(error)) break;
+        if (!this.isRetryable(error)) {
+          // Non-retryable error (e.g. insufficient balance, auth failure):
+          // skip remaining retries and go straight to fallback.
+          break;
+        }
         if (attempt < this.policy.maxRetries) {
           // Notify caller about the retry so streaming consumers can emit a marker
           params.onRetry?.(attempt + 1, lastError);

@@ -28,11 +28,18 @@ interface PendingApproval {
   resolve: (approved: boolean) => void;
 }
 
+/** User action from the post-task menu */
+export type UserAction =
+  | { type: "continue"; message: string }
+  | { type: "save" }
+  | { type: "exit" };
+
 export class DashboardEventBridge extends EventEmitter {
   private approvalCounter = 0;
   private pendingApproval: PendingApproval | null = null;
   private lastBudgetEmit = 0;
   private static BUDGET_THROTTLE_MS = 200;
+  private userActionResolve: ((action: UserAction) => void) | null = null;
 
   /**
    * Create an AgentLoopDeps with all lifecycle callbacks wired
@@ -154,5 +161,27 @@ export class DashboardEventBridge extends EventEmitter {
       data: { status, steps, cost, content },
       timestamp: Date.now(),
     });
+  }
+
+  /** Wait for user to choose a post-task action (continue / save / exit) */
+  waitForUserAction(): Promise<UserAction> {
+    return new Promise((resolve) => {
+      this.userActionResolve = resolve;
+    });
+  }
+
+  /** Resolve the pending user action (called by Dashboard keyboard handler) */
+  resolveUserAction(action: UserAction): void {
+    if (this.userActionResolve) {
+      const resolve = this.userActionResolve;
+      this.userActionResolve = null;
+      resolve(action);
+    }
+  }
+
+  /** Reset state for a new conversation round */
+  resetForContinuation(): void {
+    this.pendingApproval = null;
+    this.lastBudgetEmit = 0;
   }
 }

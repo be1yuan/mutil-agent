@@ -136,15 +136,14 @@ class Orchestrator {
       return;
     }
 
-    // Standard mode (Phase 1: enhanced terminal output)
-    // Startup banner
+    // Standard mode
     if (!quiet) {
       console.log(renderBanner(agentType, definition.model, budget));
       console.log();
     }
 
+    // Build deps (shared across conversation rounds)
     let currentStepCost = 0;
-
     const deps = {
       adapterSelector: new AdapterSelector(),
       permissionResolver: new PermissionResolver(this.config.security.requireApproval),
@@ -165,15 +164,10 @@ class Orchestrator {
         return true;
       },
       workspaceDir,
-      // Stream text to stdout (suppressed in quiet mode)
       onStreamText: quiet ? undefined : (text: string) => {
         process.stdout.write(text);
       },
-
-      // ── Lifecycle callbacks ──
-
       onStepStart: quiet ? undefined : (step: number) => {
-        // Print cost bar from previous step (if any)
         if (step > 0 && currentStepCost > 0) {
           console.log(renderCostStatus(currentStepCost, budget, step, definition.maxSteps));
         }
@@ -181,48 +175,143 @@ class Orchestrator {
         console.log();
         console.log(renderStepStart(step, definition.maxSteps));
       },
-
       onToolStart: quiet ? undefined : (_agentType: string, toolName: string, args: Record<string, unknown>) => {
         const detail = verbose ? JSON.stringify(args) : summarizeToolArgs(toolName, args);
-        // Write without newline — onToolComplete will append status
         process.stdout.write(renderToolStart(toolName, detail, verbose));
       },
-
       onToolComplete: quiet ? undefined : (_agentType: string, toolName: string, duration: number, success: boolean) => {
-        // Append status to the tool start line
         const status = success
           ? style.success(`  ✓ ${duration}ms`)
           : style.error(`  ✗ ${duration}ms`);
         console.log(status);
       },
-
       onSubAgentSpawn: quiet ? undefined : (parent: string, child: string, subTask: string) => {
         console.log(renderSubAgentSpawn(parent, child, subTask));
       },
-
       onSubAgentComplete: quiet ? undefined : (_parent: string, child: string, result: SubAgentResult) => {
         console.log(renderSubAgentComplete(child, result.status, result.cost));
       },
-
       onBudgetUpdate: quiet ? undefined : (spent: number, _remaining: number) => {
-        // Track cost per step; actual rendering happens at step boundaries
         currentStepCost = spent;
       },
     };
 
+    // ── Conversation loop ──
     const loop = new AgentLoop(deps);
-    const result = await loop.run(task, definition, budget);
+    let conversationHistory: (import("../adapters/types.js").Message | import("../adapters/types.js").ToolResult)[] | undefined;
 
-    // Final cost bar + result
-    if (!quiet && currentStepCost > 0) {
-      console.log(renderCostStatus(currentStepCost, budget, result.steps, definition.maxSteps));
+    while (true) {
+      // Run the agent loop
+      const result = conversationHistory
+        ? await loop.run(task, definition, budget, { initialHistory: conversationHistory })
+        : await loop.run(task, definition, budget);
+
+      // Preserve history for continuation
+      if (result.history) {
+        conversationHistory = result.history;
+      }
+
+      // Final cost bar + result
+      if (!quiet && currentStepCost > 0) {
+        console.log(renderCostStatus(currentStepCost, budget, result.steps, definition.maxSteps));
+      }
+      console.log();
+      console.log(renderResult(result));
+
+      if (result.content && verbose) {
+        console.log(`\nContent:\n${result.content}`);
+      }
+
+      // ── Post-task action menu (inner loop: save re-shows menu) ──
+      while (true) {
+        const action = await this.promptPostTaskAction(result, workspaceDir, quiet);
+        if (action.type === "exit") {
+          return; // Exit the entire conversation loop
+        }
+        if (action.type === "save") {
+          // Save is handled inside promptPostTaskAction; re-show menu
+          continue;
+        }
+        if (action.type === "continue") {
+          if (!conversationHistory) {
+            conversationHistory = [{ role: "user" as const, content: task }];
+          }
+          conversationHistory.push({ role: "user", content: action.message });
+          if (!quiet) {
+            console.log();
+            console.log(style.dim("─── Continuing conversation ───"));
+            console.log();
+          }
+          break; // Break inner loop to re-run agent
+        }
+        break;
+      }
     }
+  }
+
+  /** Prompt user for post-task action (continue / save / exit) */
+  private async promptPostTaskAction(
+    result: import("../types/core.js").AgentResult,
+    workspaceDir: string,
+    quiet: boolean
+  ): Promise<{ type: "exit" } | { type: "save" } | { type: "continue"; message: string }> {
+    const readline = await import("node:readline");
+
+    const statusIcon = result.status === "success" ? "✓" : result.status === "error" ? "✗" : "⚠";
+    const statusColor = result.status === "success" ? "\x1b[32m" : result.status === "error" ? "\x1b[31m" : "\x1b[33m";
+    const reset = "\x1b[0m";
+
     console.log();
-    console.log(renderResult(result));
+    console.log(`${statusColor}${statusIcon}${reset} ${statusColor}${result.status.toUpperCase()}${reset}  Steps: ${result.steps}  Cost: ¥${result.cost.toFixed(4)}`);
+    console.log(style.dim("──────────────────────────────────────────────"));
+    console.log(`  ${style.bold("1.")} Continue chatting`);
+    console.log(`  ${style.bold("2.")} Save result to file`);
+    console.log(`  ${style.bold("3.")} Exit`);
+    console.log(style.dim("──────────────────────────────────────────────"));
 
-    if (result.content && verbose) {
-      console.log(`\nContent:\n${result.content}`);
-    }
+    const rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout,
+    });
+
+    return new Promise((resolve) => {
+      rl.question(`  Select [1-3] or type a message to continue: `, (answer) => {
+        rl.close();
+        const trimmed = answer.trim();
+
+        if (trimmed === "2") {
+          // Save result
+          try {
+            const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+            const filePath = path.join(workspaceDir, `output-${ts}.md`);
+            fs.writeFileSync(filePath, result.content ?? "(no content)", "utf-8");
+            console.log(style.success(`  ✓ Saved to: ${filePath}`));
+          } catch (e) {
+            console.error(style.error(`  ✗ Save failed: ${(e as Error).message}`));
+          }
+          resolve({ type: "save" });
+        } else if (trimmed === "3" || trimmed === "") {
+          resolve({ type: "exit" });
+        } else if (trimmed === "1") {
+          // Continue — need to get the follow-up message
+          const rl2 = readline.createInterface({
+            input: process.stdin,
+            output: process.stdout,
+          });
+          rl2.question(`  Your message: `, (msg) => {
+            rl2.close();
+            if (msg.trim()) {
+              resolve({ type: "continue", message: msg.trim() });
+            } else {
+              resolve({ type: "exit" });
+            }
+          });
+        } else {
+          // Treat as follow-up message directly
+          resolve({ type: "continue", message: trimmed });
+        }
+      });
+    });
   }
 
   /** Execute task with ink TUI dashboard */
@@ -283,12 +372,11 @@ class Orchestrator {
     };
 
     // Enter alternate screen buffer to prevent repeated frame output on Windows.
-    // Ink's built-in alternate screen may not work on all Windows terminals.
     const useAltScreen = process.stdout.isTTY;
     if (useAltScreen) {
-      process.stdout.write("\x1b[?1049h"); // Enter alternate screen
-      process.stdout.write("\x1b[2J");      // Clear screen
-      process.stdout.write("\x1b[H");       // Move cursor to top-left
+      process.stdout.write("\x1b[?1049h");
+      process.stdout.write("\x1b[2J");
+      process.stdout.write("\x1b[H");
     }
 
     // Render Dashboard UI
@@ -305,32 +393,60 @@ class Orchestrator {
       { patchConsole: false }
     );
 
-    // Run agent loop in background
+    // ── Conversation loop (dashboard mode) ──
     const loop = new AgentLoop(deps);
+    let conversationHistory: (import("../adapters/types.js").Message | import("../adapters/types.js").ToolResult)[] | undefined;
+
     try {
-      const result = await loop.run(task, definition, budget);
-      // Signal done to dashboard — user can review result and save/exit inside dashboard
-      bridge.emitDone(result.status, result.steps, result.cost, result.content);
+      while (true) {
+        // Run the agent loop
+        const result = conversationHistory
+          ? await loop.run(task, definition, budget, { initialHistory: conversationHistory })
+          : await loop.run(task, definition, budget);
 
-      // Wait for user to press [E]xit in the dashboard
-      await waitUntilExit();
+        // Preserve history for continuation
+        if (result.history) {
+          conversationHistory = result.history;
+        }
+
+        // Signal done to dashboard
+        bridge.emitDone(result.status, result.steps, result.cost, result.content);
+
+        // Wait for user action (continue / save / exit)
+        const action = await bridge.waitForUserAction();
+
+        if (action.type === "exit") {
+          break;
+        }
+
+        if (action.type === "continue") {
+          if (!conversationHistory) {
+            conversationHistory = [{ role: "user" as const, content: task }];
+          }
+          conversationHistory.push({ role: "user", content: action.message });
+          bridge.resetForContinuation();
+          continue;
+        }
+
+        if (action.type === "save") {
+          // Save is handled inside the Dashboard component via onSave callback
+          // Just loop back to show the action menu again
+          continue;
+        }
+      }
+
       unmount();
-
-      // Restore main screen buffer
       if (useAltScreen) {
-        process.stdout.write("\x1b[?1049l"); // Leave alternate screen
+        process.stdout.write("\x1b[?1049l");
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       bridge.emitDone("error", 0, 0, msg);
       await waitUntilExit();
       unmount();
-
-      // Restore main screen buffer
       if (useAltScreen) {
-        process.stdout.write("\x1b[?1049l"); // Leave alternate screen
+        process.stdout.write("\x1b[?1049l");
       }
-
       console.error(`Error: ${msg}`);
     }
   }
@@ -340,6 +456,40 @@ class Orchestrator {
     for (const [agentType, def] of this.agentDefinitions) {
       console.log(`  ${agentType}: ${def.description ?? "No description"} (${def.model})`);
     }
+  }
+
+  /** Interactively prompt user to choose execution mode */
+  async promptModeSelection(task: string): Promise<"single" | "committee"> {
+    const readline = await import("node:readline");
+
+    console.log();
+    console.log(style.dim("──────────────────────────────────────────────"));
+    console.log(style.bold("  How would you like to execute this task?"));
+    console.log();
+    console.log(`  ${style.bold("1.")} Single Agent`);
+    console.log(style.dim("     Main agent handles everything — fast, efficient, good for straightforward tasks"));
+    console.log();
+    console.log(`  ${style.bold("2.")} Multi-Agent Committee`);
+    console.log(style.dim("     explore + coder + reviewer work in parallel — thorough, good for complex tasks"));
+    console.log(style.dim("──────────────────────────────────────────────"));
+    console.log();
+
+    const rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout,
+    });
+
+    return new Promise((resolve) => {
+      rl.question(`  Select [1-2, default: 1]: `, (answer) => {
+        rl.close();
+        const trimmed = answer.trim();
+        if (trimmed === "2" || trimmed.toLowerCase() === "c" || trimmed.toLowerCase() === "committee") {
+          resolve("committee");
+        } else {
+          resolve("single");
+        }
+      });
+    });
   }
 
   async committee(
@@ -418,6 +568,49 @@ class Orchestrator {
     if (result.content) {
       console.log(`\n--- Aggregated Output ---\n${result.content}`);
     }
+
+    // Post-task action menu for committee mode (save / exit only — no continue in committee)
+    const action = await this.promptCommitteePostTaskAction(result.content, workspaceDir);
+    // Only "save" and "exit" — committee doesn't support continuation
+  }
+
+  /** Post-task menu for committee mode (no continue — committee is one-shot) */
+  private async promptCommitteePostTaskAction(
+    content: string | undefined,
+    workspaceDir: string
+  ): Promise<{ type: "save" } | { type: "exit" }> {
+    const readline = await import("node:readline");
+
+    console.log(style.dim("──────────────────────────────────────────────"));
+    console.log(`  ${style.bold("1.")} Save result to file`);
+    console.log(`  ${style.bold("2.")} Exit`);
+    console.log(style.dim("──────────────────────────────────────────────"));
+
+    const rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout,
+    });
+
+    return new Promise((resolve) => {
+      rl.question(`  Select [1-2, default: 2]: `, (answer) => {
+        rl.close();
+        const trimmed = answer.trim();
+
+        if (trimmed === "1") {
+          try {
+            const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+            const filePath = path.join(workspaceDir, `output-${ts}.md`);
+            fs.writeFileSync(filePath, content ?? "(no content)", "utf-8");
+            console.log(style.success(`  ✓ Saved to: ${filePath}`));
+          } catch (e) {
+            console.error(style.error(`  ✗ Save failed: ${(e as Error).message}`));
+          }
+          resolve({ type: "save" });
+        } else {
+          resolve({ type: "exit" });
+        }
+      });
+    });
   }
 
   /** Start the HTTP API server */
@@ -492,16 +685,42 @@ program
   .description("Execute a task with an agent")
   .argument("<task>", "Task description")
   .option("-c, --config <path>", "Config file path", "orchestrator.yaml")
-  .option("-a, --agent <type>", "Agent type to use", "main")
+  .option("-a, --agent <type>", "Agent type to use (default: auto-select)")
+  .option("-m, --mode <mode>", "Execution mode: single or committee", "single")
   .option("-b, --budget <yuan>", "Budget limit in yuan (RMB)", parseFloat)
   .option("-v, --verbose", "Show full tool arguments and return values")
   .option("-q, --quiet", "Only show final result, suppress real-time output")
   .option("-d, --dashboard", "Enable interactive TUI dashboard mode")
-  .action(async (task: string, options: { config: string; agent?: string; budget?: number; verbose?: boolean; quiet?: boolean; dashboard?: boolean }) => {
+  .option("-i, --interactive", "Interactively choose execution mode before starting")
+  .action(async (task: string, options: { config: string; agent?: string; mode?: string; budget?: number; verbose?: boolean; quiet?: boolean; dashboard?: boolean; interactive?: boolean }) => {
     const agentsDir = path.join(path.dirname(options.config), ".agents");
     const orchestrator = new Orchestrator(options.config, agentsDir);
     await orchestrator.init();
-    await orchestrator.execute(task, { agent: options.agent, budget: options.budget, verbose: options.verbose, quiet: options.quiet, dashboard: options.dashboard });
+
+    // Interactive mode selection
+    if (options.interactive && !options.dashboard) {
+      const mode = await orchestrator.promptModeSelection(task);
+      options.mode = mode;
+    }
+
+    if (options.mode === "committee") {
+      await orchestrator.committee(task, {
+        agents: "explore,coder,reviewer",
+        strategy: "concat",
+        budget: options.budget,
+        verbose: options.verbose,
+        quiet: options.quiet,
+        dashboard: options.dashboard,
+      });
+    } else {
+      await orchestrator.execute(task, {
+        agent: options.agent,
+        budget: options.budget,
+        verbose: options.verbose,
+        quiet: options.quiet,
+        dashboard: options.dashboard,
+      });
+    }
   });
 
 program

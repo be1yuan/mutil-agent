@@ -19,4 +19,6 @@ export interface AgentResult {
   error?: string;
   steps: number;
   cost: number;
+  /** Conversation history for continuation — preserved across multi-turn sessions */
+  history?: (import("../adapters/types.js").Message | import("../adapters/types.js").ToolResult)[];
 }

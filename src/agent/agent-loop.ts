@@ -74,12 +74,13 @@ export class AgentLoop {
   async run(
     task: string,
     definition: AgentDefinition,
-    budget: number
+    budget: number,
+    options?: { initialHistory?: ChatParams["messages"] }
   ): Promise<AgentResult> {
     const logger = getLogger();
-    const history: ChatParams["messages"] = [
-      { role: "user", content: task },
-    ];
+    const history: ChatParams["messages"] = options?.initialHistory
+      ? [...options.initialHistory]
+      : [{ role: "user", content: task }];
     let steps = 0;
 
     // Build tool list from agent definition
@@ -123,6 +124,7 @@ export class AgentLoop {
           content: `Budget insufficient for next model call (estimated worst case: ¥${worstCaseCost.toFixed(4)}, remaining: ¥${this.deps.costTracker.remaining.toFixed(4)})`,
           steps,
           cost: this.deps.costTracker.spent,
+          history,
         };
       }
 
@@ -176,6 +178,7 @@ export class AgentLoop {
           error: `Model call failed (after retries + fallback): ${errMsg}`,
           steps,
           cost: this.deps.costTracker.spent,
+          history,
         };
       }
 
@@ -192,6 +195,7 @@ export class AgentLoop {
           status: "budget_exceeded",
           steps,
           cost: this.deps.costTracker.spent,
+          history,
         };
       }
 
@@ -207,6 +211,7 @@ export class AgentLoop {
           content: response.content ?? undefined,
           steps,
           cost: this.deps.costTracker.spent,
+          history,
         };
       }
 
@@ -308,6 +313,7 @@ export class AgentLoop {
       status: "max_steps_reached",
       steps,
       cost: this.deps.costTracker.spent,
+      history,
     };
   }
 

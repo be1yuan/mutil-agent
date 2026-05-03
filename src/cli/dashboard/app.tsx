@@ -48,6 +48,13 @@ interface AppProps {
   onSave?: (content: string) => string | undefined;
 }
 
+/** Post-task action menu items */
+const ACTION_ITEMS = [
+  { key: "1", label: "Continue chatting", action: "continue" as const },
+  { key: "2", label: "Save result to file", action: "save" as const },
+  { key: "3", label: "Exit", action: "exit" as const },
+];
+
 // ── Main App component ──
 
 export function App({
@@ -76,6 +83,11 @@ export function App({
   const [finalSteps, setFinalSteps] = useState(0);
   const [finalCost, setFinalCost] = useState(0);
   const [savedPath, setSavedPath] = useState<string | undefined>(undefined);
+
+  // Action menu state
+  const [selectedAction, setSelectedAction] = useState(0); // 0-based index into ACTION_ITEMS
+  const [isChatInput, setIsChatInput] = useState(false); // true when user is typing a follow-up message
+  const [chatInput, setChatInput] = useState("");
 
   // Counter for output line IDs
   const lineIdRef = useRef(0);
@@ -241,6 +253,9 @@ export function App({
           setFinalContent(d.content ?? "");
           setFinalSteps(d.steps);
           setFinalCost(d.cost);
+          setSelectedAction(0);
+          setIsChatInput(false);
+          setChatInput("");
           addLine(
             `\n━━━ Task ${d.status.toUpperCase()} ─━━ Steps: ${d.steps} │ Cost: ¥${d.cost.toFixed(4)}`,
             "system"
@@ -256,16 +271,15 @@ export function App({
 
   // ── Keyboard input ──
 
-  useInput((input) => {
-    const key = input.toLowerCase();
-
-    // Approval flow
+  useInput((input, key) => {
+    // Approval flow (unchanged)
     if (approvalRequest) {
-      if (key === "a") {
+      const k = input.toLowerCase();
+      if (k === "a") {
         bridge.resolveApproval(true);
         setApprovalRequest(undefined);
         addLine("  ✓ Approved", "system");
-      } else if (key === "d") {
+      } else if (k === "d") {
         bridge.resolveApproval(false);
         setApprovalRequest(undefined);
         addLine("  ✗ Denied", "system");
@@ -273,13 +287,67 @@ export function App({
       return;
     }
 
-    // Done flow: save or exit
+    // Chat input mode: typing a follow-up message
+    if (isDone && isChatInput) {
+      if (key.escape) {
+        setIsChatInput(false);
+        setChatInput("");
+        return;
+      }
+      if (key.return) {
+        if (chatInput.trim()) {
+          bridge.resolveUserAction({ type: "continue", message: chatInput.trim() });
+          setIsChatInput(false);
+          setChatInput("");
+          setIsDone(false); // Transition back to running state
+        }
+        return;
+      }
+      if (key.backspace || key.delete) {
+        setChatInput((prev) => prev.slice(0, -1));
+        return;
+      }
+      // Append typed character (ignore control characters)
+      if (input && !key.ctrl && !key.meta) {
+        setChatInput((prev) => prev + input);
+      }
+      return;
+    }
+
+    // Done flow: action menu navigation
     if (isDone) {
-      if (key === "s" && !savedPath && onSave) {
-        const path = onSave(finalContent);
-        if (path) setSavedPath(path);
-      } else if (key === "e") {
-        exit();
+      if (key.upArrow) {
+        setSelectedAction((prev) => (prev - 1 + ACTION_ITEMS.length) % ACTION_ITEMS.length);
+      } else if (key.downArrow) {
+        setSelectedAction((prev) => (prev + 1) % ACTION_ITEMS.length);
+      } else if (key.return) {
+        const item = ACTION_ITEMS[selectedAction];
+        if (item.action === "continue") {
+          setIsChatInput(true);
+        } else if (item.action === "save" && !savedPath && onSave) {
+          const path = onSave(finalContent);
+          if (path) setSavedPath(path);
+          bridge.resolveUserAction({ type: "save" });
+        } else if (item.action === "exit") {
+          bridge.resolveUserAction({ type: "exit" });
+          exit();
+        }
+      } else if (input === "1" || input === "2" || input === "3") {
+        // Quick number shortcuts
+        const idx = parseInt(input) - 1;
+        if (idx >= 0 && idx < ACTION_ITEMS.length) {
+          const item = ACTION_ITEMS[idx];
+          if (item.action === "continue") {
+            setIsChatInput(true);
+          } else if (item.action === "save" && !savedPath && onSave) {
+            const path = onSave(finalContent);
+            if (path) setSavedPath(path);
+            bridge.resolveUserAction({ type: "save" });
+          } else if (item.action === "exit") {
+            bridge.resolveUserAction({ type: "exit" });
+            exit();
+          }
+        }
       }
     }
   });
@@ -339,24 +407,43 @@ export function App({
         </>
       )}
 
-      {/* Bottom: Save prompt or status bar */}
+      {/* Bottom: Action menu or approval bar */}
       {isDone ? (
-        <Box width="100%" paddingX={1}>
-          {savedPath ? (
-            <Text color="green">{"  ✓ Saved to: "}{savedPath}{"  │  [E]xit"}</Text>
-          ) : canSave ? (
-            <Text>
-              <Text color="yellow">{"  [S]ave to file"}</Text>
-              {"  │  "}
-              <Text color="gray">"[E]xit"</Text>
-            </Text>
+        <Box flexDirection="column" width="100%" paddingX={1}>
+          {/* Saved path indicator */}
+          {savedPath && (
+            <Text color="green">{"  ✓ Saved to: "}{savedPath}</Text>
+          )}
+
+          {/* Chat input mode */}
+          {isChatInput ? (
+            <Box flexDirection="column">
+              <Text color="cyan">{"  Type your message (Enter to send, Esc to cancel):"}</Text>
+              <Box>
+                <Text color="gray">{"  > "}</Text>
+                <Text bold>{chatInput}</Text>
+                <Text color="gray">{"█"}</Text>
+              </Box>
+            </Box>
           ) : (
-            <Text>
-              <Text bold color={statusColor}>{statusIcon} {"Done"}</Text>
-              {" │ Steps: "}{finalSteps}{" │ Cost: ¥"}{finalCost.toFixed(4)}
-              {"  │  "}
-              <Text color="gray">"[E]xit"</Text>
-            </Text>
+            <>
+              {/* Action menu with selectable items */}
+              <Text dimColor>{"  What would you like to do?"}</Text>
+              {ACTION_ITEMS.map((item, idx) => {
+                const isSelected = idx === selectedAction;
+                const isDisabled = item.action === "save" && !!savedPath;
+                const prefix = isSelected ? " > " : "   ";
+                const color = isDisabled ? "gray" : isSelected ? "cyan" : "white";
+                const numLabel = item.action === "save" && savedPath
+                  ? `${item.key}. ${item.label} (saved)` : `${item.key}. ${item.label}`;
+                return (
+                  <Text key={item.key} color={color} bold={isSelected}>
+                    {prefix}{numLabel}
+                  </Text>
+                );
+              })}
+              <Text dimColor>{"  ↑↓ Navigate  Enter Select  Or press 1/2/3"}</Text>
+            </>
           )}
         </Box>
       ) : (

@@ -110,7 +110,7 @@ class Orchestrator {
 
   async execute(
     task: string,
-    options: { agent?: string; budget?: number; verbose?: boolean; quiet?: boolean; dashboard?: boolean }
+    options: { agent?: string; budget?: number; verbose?: boolean; quiet?: boolean; dashboard?: boolean; mode?: "single" | "auto" | "committee" }
   ): Promise<void> {
     const agentType = options.agent ?? "main";
     const definition = this.agentDefinitions.get(agentType);
@@ -123,6 +123,7 @@ class Orchestrator {
     const verbose = options.verbose ?? false;
     const quiet = options.quiet ?? false;
     const dashboard = options.dashboard ?? false;
+    const mode = options.mode ?? "auto"; // auto = self-orchestration (AI decides)
     const workspaceDir = path.dirname(path.resolve(this.configPath));
 
     // Determine if the selected provider uses native web search
@@ -138,8 +139,17 @@ class Orchestrator {
 
     // Standard mode
     if (!quiet) {
+      const modeLabel = mode === "single" ? "single agent" : mode === "auto" ? "self-orchestration" : mode;
       console.log(renderBanner(agentType, definition.model, budget));
+      console.log(style.dim(`  Mode: ${modeLabel}`));
       console.log();
+    }
+
+    // For "single" mode: disable task tool by creating a modified definition
+    let effectiveDefinition = definition;
+    if (mode === "single") {
+      const { task: _, ...toolsWithoutTask } = definition.tools;
+      effectiveDefinition = { ...definition, tools: toolsWithoutTask };
     }
 
     // Build deps (shared across conversation rounds)
@@ -169,11 +179,11 @@ class Orchestrator {
       },
       onStepStart: quiet ? undefined : (step: number) => {
         if (step > 0 && currentStepCost > 0) {
-          console.log(renderCostStatus(currentStepCost, budget, step, definition.maxSteps));
+          console.log(renderCostStatus(currentStepCost, budget, step, effectiveDefinition.maxSteps));
         }
         currentStepCost = 0;
         console.log();
-        console.log(renderStepStart(step, definition.maxSteps));
+        console.log(renderStepStart(step, effectiveDefinition.maxSteps));
       },
       onToolStart: quiet ? undefined : (_agentType: string, toolName: string, args: Record<string, unknown>) => {
         const detail = verbose ? JSON.stringify(args) : summarizeToolArgs(toolName, args);
@@ -203,8 +213,8 @@ class Orchestrator {
     while (true) {
       // Run the agent loop
       const result = conversationHistory
-        ? await loop.run(task, definition, budget, { initialHistory: conversationHistory })
-        : await loop.run(task, definition, budget);
+        ? await loop.run(task, effectiveDefinition, budget, { initialHistory: conversationHistory })
+        : await loop.run(task, effectiveDefinition, budget);
 
       // Preserve history for continuation
       if (result.history) {
@@ -213,7 +223,7 @@ class Orchestrator {
 
       // Final cost bar + result
       if (!quiet && currentStepCost > 0) {
-        console.log(renderCostStatus(currentStepCost, budget, result.steps, definition.maxSteps));
+        console.log(renderCostStatus(currentStepCost, budget, result.steps, effectiveDefinition.maxSteps));
       }
       console.log();
       console.log(renderResult(result));
@@ -451,15 +461,8 @@ class Orchestrator {
     }
   }
 
-  listAgents(): void {
-    console.log("Available agents:");
-    for (const [agentType, def] of this.agentDefinitions) {
-      console.log(`  ${agentType}: ${def.description ?? "No description"} (${def.model})`);
-    }
-  }
-
   /** Interactively prompt user to choose execution mode */
-  async promptModeSelection(task: string): Promise<"single" | "committee"> {
+  async promptModeSelection(): Promise<"single" | "auto" | "committee"> {
     const readline = await import("node:readline");
 
     console.log();
@@ -467,10 +470,13 @@ class Orchestrator {
     console.log(style.bold("  How would you like to execute this task?"));
     console.log();
     console.log(`  ${style.bold("1.")} Single Agent`);
-    console.log(style.dim("     Main agent handles everything — fast, efficient, good for straightforward tasks"));
+    console.log(style.dim("     Main agent executes directly — fast, no sub-agent delegation"));
     console.log();
-    console.log(`  ${style.bold("2.")} Multi-Agent Committee`);
-    console.log(style.dim("     explore + coder + reviewer work in parallel — thorough, good for complex tasks"));
+    console.log(`  ${style.bold("2.")} Self-Orchestration (default)`);
+    console.log(style.dim("     Main agent decides whether to delegate via task tool"));
+    console.log();
+    console.log(`  ${style.bold("3.")} Multi-Agent Committee`);
+    console.log(style.dim("     explore + coder + reviewer + architect work in parallel"));
     console.log(style.dim("──────────────────────────────────────────────"));
     console.log();
 
@@ -480,17 +486,28 @@ class Orchestrator {
     });
 
     return new Promise((resolve) => {
-      rl.question(`  Select [1-2, default: 1]: `, (answer) => {
+      rl.question(`  Select [1-3, default: 2]: `, (answer) => {
         rl.close();
         const trimmed = answer.trim();
-        if (trimmed === "2" || trimmed.toLowerCase() === "c" || trimmed.toLowerCase() === "committee") {
+        if (trimmed === "1" || trimmed.toLowerCase() === "s" || trimmed.toLowerCase() === "single") {
+          resolve("single");
+        } else if (trimmed === "3" || trimmed.toLowerCase() === "c" || trimmed.toLowerCase() === "committee") {
           resolve("committee");
         } else {
-          resolve("single");
+          resolve("auto");
         }
       });
     });
   }
+
+  listAgents(): void {
+    console.log("Available agents:");
+    for (const [agentType, def] of this.agentDefinitions) {
+      console.log(`  ${agentType}: ${def.description ?? "No description"} (${def.model})`);
+    }
+  }
+
+
 
   async committee(
     task: string,
@@ -685,8 +702,8 @@ program
   .description("Execute a task with an agent")
   .argument("<task>", "Task description")
   .option("-c, --config <path>", "Config file path", "orchestrator.yaml")
-  .option("-a, --agent <type>", "Agent type to use (default: auto-select)")
-  .option("-m, --mode <mode>", "Execution mode: single or committee", "single")
+  .option("-a, --agent <type>", "Agent type to use (default: main)")
+  .option("-m, --mode <mode>", "Execution mode: single, auto, committee", "auto")
   .option("-b, --budget <yuan>", "Budget limit in yuan (RMB)", parseFloat)
   .option("-v, --verbose", "Show full tool arguments and return values")
   .option("-q, --quiet", "Only show final result, suppress real-time output")
@@ -697,15 +714,15 @@ program
     const orchestrator = new Orchestrator(options.config, agentsDir);
     await orchestrator.init();
 
-    // Interactive mode selection
+    // Interactive mode selection (overrides -m if used)
+    let mode = options.mode ?? "auto";
     if (options.interactive && !options.dashboard) {
-      const mode = await orchestrator.promptModeSelection(task);
-      options.mode = mode;
+      mode = await orchestrator.promptModeSelection();
     }
 
-    if (options.mode === "committee") {
+    if (mode === "committee") {
       await orchestrator.committee(task, {
-        agents: "explore,coder,reviewer",
+        agents: "explore,coder,reviewer,architect",
         strategy: "concat",
         budget: options.budget,
         verbose: options.verbose,
@@ -719,6 +736,7 @@ program
         verbose: options.verbose,
         quiet: options.quiet,
         dashboard: options.dashboard,
+        mode: mode as "single" | "auto",
       });
     }
   });
@@ -815,7 +833,7 @@ program
   .description("Run multiple agents in parallel (Committee mode)")
   .argument("<task>", "Task description")
   .option("-c, --config <path>", "Config file path", "orchestrator.yaml")
-  .option("-a, --agents <types>", "Comma-separated agent types", "explore,coder,reviewer")
+  .option("-a, --agents <types>", "Comma-separated agent types", "explore,coder,reviewer,architect")
   .option("-s, --strategy <strategy>", "Aggregation strategy: concat, majority, best", "concat")
   .option("-b, --budget <yuan>", "Budget limit in yuan (RMB)", parseFloat)
   .option("-v, --verbose", "Show full tool arguments and return values")

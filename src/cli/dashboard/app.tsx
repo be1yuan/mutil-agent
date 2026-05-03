@@ -15,6 +15,7 @@
 
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { Box, Text, useApp, useInput } from "ink";
+import TextInput from "ink-text-input";
 import type { ApprovalEventData } from "./types.js";
 import { StatusBar } from "./components/status-bar.js";
 import { CostGauge } from "./components/cost-gauge.js";
@@ -287,29 +288,11 @@ export function App({
       return;
     }
 
-    // Chat input mode: typing a follow-up message
+    // Chat input mode: only handle Escape here (TextInput handles text + Enter)
     if (isDone && isChatInput) {
       if (key.escape) {
         setIsChatInput(false);
         setChatInput("");
-        return;
-      }
-      if (key.return) {
-        if (chatInput.trim()) {
-          bridge.resolveUserAction({ type: "continue", message: chatInput.trim() });
-          setIsChatInput(false);
-          setChatInput("");
-          setIsDone(false); // Transition back to running state
-        }
-        return;
-      }
-      if (key.backspace || key.delete) {
-        setChatInput((prev) => prev.slice(0, -1));
-        return;
-      }
-      // Append typed character (ignore control characters)
-      if (input && !key.ctrl && !key.meta) {
-        setChatInput((prev) => prev + input);
       }
       return;
     }
@@ -421,8 +404,20 @@ export function App({
               <Text color="cyan">{"  Type your message (Enter to send, Esc to cancel):"}</Text>
               <Box>
                 <Text color="gray">{"  > "}</Text>
-                <Text bold>{chatInput}</Text>
-                <Text color="gray">{"█"}</Text>
+                <TextInput
+                  value={chatInput}
+                  onChange={setChatInput}
+                  onSubmit={(value) => {
+                    if (value.trim()) {
+                      bridge.resolveUserAction({ type: "continue", message: value.trim() });
+                      setIsChatInput(false);
+                      setChatInput("");
+                      setIsDone(false);
+                    }
+                  }}
+                  focus
+                  showCursor
+                />
               </Box>
             </Box>
           ) : (

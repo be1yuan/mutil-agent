@@ -34,6 +34,7 @@ const __dirname = __dirName(__filename);
   external: [
     // ink + react: peer dependencies for dashboard (optional)
     "ink",
+    "ink-text-input",
     "react",
     "react-dom",
     // cheerio: optional dependency for WebFetch HTML extraction

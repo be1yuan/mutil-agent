@@ -118,7 +118,7 @@ class Orchestrator {
   }
 
   async execute(
-    task: string,
+    task: string | undefined,
     options: { agent?: string; budget?: number; verbose?: boolean; quiet?: boolean; dashboard?: boolean }
   ): Promise<void> {
     const agentType = options.agent ?? "main";
@@ -145,7 +145,9 @@ class Orchestrator {
       return;
     }
 
-    // Standard mode
+    // Standard mode — task is always defined here (dashboard returns early)
+    const resolvedTask = task as string;
+
     if (!quiet) {
       console.log(renderBanner(agentType, definition.model, budget));
       console.log();
@@ -212,8 +214,8 @@ class Orchestrator {
     while (true) {
       // Run the agent loop
       const result = conversationHistory
-        ? await loop.run(task, definition, budget, { initialHistory: conversationHistory })
-        : await loop.run(task, definition, budget);
+        ? await loop.run(resolvedTask, definition, budget, { initialHistory: conversationHistory })
+        : await loop.run(resolvedTask, definition, budget);
 
       // Preserve history for continuation
       if (result.history) {
@@ -242,7 +244,7 @@ class Orchestrator {
         }
         // Continue conversation
         if (!conversationHistory) {
-          conversationHistory = [{ role: "user" as const, content: task }];
+          conversationHistory = [{ role: "user" as const, content: resolvedTask }];
         }
         conversationHistory.push({ role: "user", content: action.message });
         if (!quiet) {
@@ -255,7 +257,7 @@ class Orchestrator {
     }
   }
 
-  /** Claude Code-style prompt: type to continue, /save to save, /models to switch, /exit to quit */
+  /** Claude Code-style prompt: type to continue, /save to save, /model to switch, /exit to quit */
   private async promptPostTaskAction(
     result: import("../types/core.js").AgentResult,
     definition: AgentDefinition,
@@ -263,11 +265,80 @@ class Orchestrator {
     _quiet: boolean
   ): Promise<{ type: "exit" } | { type: "save" } | { type: "model-switched" } | { type: "continue"; message: string }> {
     const readline = await import("node:readline");
-
-    // Compact status line
     const icon = result.status === "success" ? style.success("✓") : result.status === "error" ? style.error("✗") : style.warning("⚠");
     const currentModel = style.dim(`[${definition.model}]`);
-    console.log(`  ${icon} ${result.status} · ${result.steps} steps · ¥${result.cost.toFixed(4)} · ${currentModel} · /save /models /exit`);
+
+    while (true) {
+      console.log(`  ${icon} ${result.status} · ${result.steps} steps · ¥${result.cost.toFixed(4)} · ${currentModel} · /save /model /exit`);
+
+      const rl = readline.createInterface({
+        input: process.stdin,
+        output: process.stdout,
+      });
+
+      const raw = await new Promise<string>((resolve) => {
+        rl.question(style.bold("  > "), (ans) => {
+          rl.close();
+          resolve(ans.trim());
+        });
+      });
+      const answer = raw.toLowerCase();
+
+      if (answer === "/exit" || answer === "/q" || answer === "") {
+        return { type: "exit" };
+      }
+
+      if (answer === "/save" || answer === "/s") {
+        try {
+          const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+          const filePath = path.join(workspaceDir, `output-${ts}.md`);
+          fs.writeFileSync(filePath, result.content ?? "(no content)", "utf-8");
+          console.log(style.success(`  Saved to: ${filePath}`));
+        } catch (e) {
+          console.error(style.error(`  Save failed: ${(e as Error).message}`));
+        }
+        return { type: "save" };
+      }
+
+      if (answer === "/model" || answer === "/models") {
+        await this.showModelPicker(definition);
+        return { type: "model-switched" };
+      }
+
+      if (answer === "/help" || answer === "/h" || answer === "/") {
+        console.log();
+        console.log(style.bold("  Slash commands:"));
+        console.log(style.dim("  /save   Save result to file"));
+        console.log(style.dim("  /model  Switch AI model"));
+        console.log(style.dim("  /exit   Exit"));
+        console.log();
+        continue;
+      }
+
+      if (answer.startsWith("/")) {
+        console.log(style.warning(`  Unknown command: ${answer.split(/\s+/)[0]}`));
+        console.log(style.dim("  Type /help to see available commands."));
+        console.log();
+        continue;
+      }
+
+      // Any other text = continue conversation (use original casing)
+      return { type: "continue", message: raw };
+    }
+  }
+
+  /** Show interactive model picker and apply selection to the given definition */
+  private async showModelPicker(definition: AgentDefinition): Promise<boolean> {
+    const readline = await import("node:readline");
+
+    console.log();
+    console.log(style.bold("  Models:"));
+    for (let i = 0; i < MODEL_CATALOG.length; i++) {
+      const m = MODEL_CATALOG[i];
+      const marker = m.model === definition.model ? style.success(" ●") : "  ";
+      console.log(`  ${marker} [${i + 1}] ${m.label}  ${style.dim(m.model)}`);
+    }
+    console.log();
 
     const rl = readline.createInterface({
       input: process.stdin,
@@ -275,66 +346,25 @@ class Orchestrator {
     });
 
     return new Promise((resolve) => {
-      rl.question(style.bold("  > "), (answer) => {
+      rl.question(style.bold(`  Select [1-${MODEL_CATALOG.length}, Enter to cancel]: `), (choice) => {
         rl.close();
-        const trimmed = answer.trim().toLowerCase();
-
-        if (trimmed === "/exit" || trimmed === "/q" || trimmed === "") {
-          resolve({ type: "exit" });
-          return;
+        const idx = parseInt(choice.trim(), 10) - 1;
+        if (idx >= 0 && idx < MODEL_CATALOG.length) {
+          const selected = MODEL_CATALOG[idx];
+          definition.model = selected.model;
+          definition.provider = selected.provider;
+          console.log(style.success(`  Switched to ${selected.label} (${selected.model})`));
+          resolve(true);
+        } else {
+          resolve(false);
         }
-
-        if (trimmed === "/save" || trimmed === "/s") {
-          try {
-            const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-            const filePath = path.join(workspaceDir, `output-${ts}.md`);
-            fs.writeFileSync(filePath, result.content ?? "(no content)", "utf-8");
-            console.log(style.success(`  Saved to: ${filePath}`));
-          } catch (e) {
-            console.error(style.error(`  Save failed: ${(e as Error).message}`));
-          }
-          resolve({ type: "save" });
-          return;
-        }
-
-        if (trimmed === "/models" || trimmed === "/model") {
-          console.log();
-          console.log(style.bold("  Models:"));
-          for (let i = 0; i < MODEL_CATALOG.length; i++) {
-            const m = MODEL_CATALOG[i];
-            const marker = m.model === definition.model ? style.success(" ●") : "  ";
-            console.log(`  ${marker} [${i + 1}] ${m.label}  ${style.dim(m.model)}`);
-          }
-          console.log();
-
-          const rl2 = readline.createInterface({
-            input: process.stdin,
-            output: process.stdout,
-          });
-
-          rl2.question(style.bold(`  Select [1-${MODEL_CATALOG.length}, Enter to cancel]: `), (choice) => {
-            rl2.close();
-            const idx = parseInt(choice.trim(), 10) - 1;
-            if (idx >= 0 && idx < MODEL_CATALOG.length) {
-              const selected = MODEL_CATALOG[idx];
-              definition.model = selected.model;
-              definition.provider = selected.provider;
-              console.log(style.success(`  Switched to ${selected.label} (${selected.model})`));
-            }
-            resolve({ type: "model-switched" });
-          });
-          return;
-        }
-
-        // Any other text = continue conversation
-        resolve({ type: "continue", message: answer.trim() });
       });
     });
   }
 
-  /** Execute task with ink TUI dashboard */
+  /** Execute task with ink TUI dashboard. If task is undefined, the TUI prompts for it. */
   private async executeWithDashboard(
-    task: string,
+    task: string | undefined,
     definition: AgentDefinition,
     budget: number,
     agentType: string,
@@ -406,10 +436,23 @@ class Orchestrator {
         provider,
         budget,
         maxSteps: definition.maxSteps,
+        initialTask: task,
         onSave,
       }),
       { patchConsole: false }
     );
+
+    // If no task provided, wait for user to enter it in the TUI
+    const actualTask = task ?? await bridge.waitForTask();
+
+    // User cancelled task input (Esc) — clean up and exit
+    if (!actualTask) {
+      unmount();
+      if (useAltScreen) {
+        process.stdout.write("\x1b[?1049l");
+      }
+      return;
+    }
 
     // ── Conversation loop (dashboard mode) ──
     const loop = new AgentLoop(deps);
@@ -419,8 +462,8 @@ class Orchestrator {
       while (true) {
         // Run the agent loop
         const result = conversationHistory
-          ? await loop.run(task, definition, budget, { initialHistory: conversationHistory })
-          : await loop.run(task, definition, budget);
+          ? await loop.run(actualTask, definition, budget, { initialHistory: conversationHistory })
+          : await loop.run(actualTask, definition, budget);
 
         // Preserve history for continuation
         if (result.history) {
@@ -439,7 +482,7 @@ class Orchestrator {
 
         if (action.type === "continue") {
           if (!conversationHistory) {
-            conversationHistory = [{ role: "user" as const, content: task }];
+            conversationHistory = [{ role: "user" as const, content: actualTask }];
           }
           conversationHistory.push({ role: "user", content: action.message });
           bridge.resetForContinuation();
@@ -476,30 +519,70 @@ class Orchestrator {
     }
   }
 
-  /** Interactively prompt for a task description (no subcommand mode) */
+  /** Interactively prompt for a task description (no subcommand mode).
+   *  Slash commands (/model, /exit) are handled inline and re-prompt. */
   async promptTask(): Promise<string> {
     const readline = await import("node:readline");
     console.log();
     console.log(style.bold("  Welcome to agent-orch — self-orchestrating multi-agent CLI"));
     console.log(style.dim("  Type your task below and press Enter. Subcommands: run | committee | serve | list-agents | validate | init"));
+    console.log(style.dim("  /model to switch model  /exit to quit  /help for commands"));
     console.log();
 
-    const rl = readline.createInterface({
-      input: process.stdin,
-      output: process.stdout,
-    });
-
-    return new Promise((resolve) => {
-      rl.question("  > ", (answer) => {
-        rl.close();
-        const trimmed = answer.trim();
-        if (!trimmed) {
-          console.error(style.error("  Task cannot be empty."));
-          process.exit(1);
-        }
-        resolve(trimmed);
+    while (true) {
+      const rl = readline.createInterface({
+        input: process.stdin,
+        output: process.stdout,
       });
-    });
+
+      const answer = await new Promise<string>((resolve) => {
+        rl.question("  > ", (ans) => {
+          rl.close();
+          resolve(ans.trim());
+        });
+      });
+
+      const trimmed = answer.trim();
+      const lower = trimmed.toLowerCase();
+
+      if (lower === "/exit" || lower === "/q") {
+        console.log(style.dim("  Goodbye."));
+        process.exit(0);
+      }
+
+      if (lower === "/model" || lower === "/models") {
+        const def = this.agentDefinitions.get("main");
+        if (def) {
+          await this.showModelPicker(def);
+          console.log();
+        }
+        continue;
+      }
+
+      if (lower === "/help" || lower === "/h" || lower === "/") {
+        console.log();
+        console.log(style.bold("  Slash commands:"));
+        console.log(style.dim("  /model  Switch AI model"));
+        console.log(style.dim("  /exit   Exit"));
+        console.log();
+        continue;
+      }
+
+      if (lower.startsWith("/")) {
+        console.log(style.warning(`  Unknown command: ${lower.split(/\s+/)[0]}`));
+        console.log(style.dim("  Type /help to see available commands."));
+        console.log();
+        continue;
+      }
+
+      if (!trimmed) {
+        console.error(style.error("  Task cannot be empty. Type /help for commands, /exit to quit."));
+        console.log();
+        continue;
+      }
+
+      return trimmed;
+    }
   }
 
   /** Interactively prompt user to choose execution mode */
@@ -625,33 +708,56 @@ class Orchestrator {
   ): Promise<{ type: "save" } | { type: "exit" }> {
     const readline = await import("node:readline");
 
-    console.log(style.dim("  /save to save  /exit to quit"));
+    while (true) {
+      console.log(style.dim("  /save to save  /exit to quit"));
 
-    const rl = readline.createInterface({
-      input: process.stdin,
-      output: process.stdout,
-    });
-
-    return new Promise((resolve) => {
-      rl.question(style.bold("  > "), (answer) => {
-        rl.close();
-        const trimmed = answer.trim().toLowerCase();
-
-        if (trimmed === "/save" || trimmed === "/s") {
-          try {
-            const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-            const filePath = path.join(workspaceDir, `output-${ts}.md`);
-            fs.writeFileSync(filePath, content ?? "(no content)", "utf-8");
-            console.log(style.success(`  Saved to: ${filePath}`));
-          } catch (e) {
-            console.error(style.error(`  Save failed: ${(e as Error).message}`));
-          }
-          resolve({ type: "save" });
-        } else {
-          resolve({ type: "exit" });
-        }
+      const rl = readline.createInterface({
+        input: process.stdin,
+        output: process.stdout,
       });
-    });
+
+      const answer = await new Promise<string>((resolve) => {
+        rl.question(style.bold("  > "), (ans) => {
+          rl.close();
+          resolve(ans.trim().toLowerCase());
+        });
+      });
+
+      if (answer === "/exit" || answer === "/q" || answer === "") {
+        return { type: "exit" };
+      }
+
+      if (answer === "/save" || answer === "/s") {
+        try {
+          const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+          const filePath = path.join(workspaceDir, `output-${ts}.md`);
+          fs.writeFileSync(filePath, content ?? "(no content)", "utf-8");
+          console.log(style.success(`  Saved to: ${filePath}`));
+        } catch (e) {
+          console.error(style.error(`  Save failed: ${(e as Error).message}`));
+        }
+        return { type: "save" };
+      }
+
+      if (answer === "/help" || answer === "/h" || answer === "/") {
+        console.log();
+        console.log(style.bold("  Slash commands:"));
+        console.log(style.dim("  /save  Save result to file"));
+        console.log(style.dim("  /exit  Exit"));
+        console.log();
+        continue;
+      }
+
+      if (answer.startsWith("/")) {
+        console.log(style.warning(`  Unknown command: ${answer.split(/\s+/)[0]}`));
+        console.log(style.dim("  Type /help to see available commands."));
+        console.log();
+        continue;
+      }
+
+      // Any other input = exit
+      return { type: "exit" };
+    }
   }
 
   /** Start the HTTP API server */
@@ -909,8 +1015,20 @@ program
     const orchestrator = new Orchestrator(options.config, agentsDir);
     await orchestrator.init();
 
-    // No task given — prompt interactively
-    if (!task) {
+    // No task given (or slash command like /models) — prompt interactively
+    // Exception: --dashboard without a task enters TUI first and prompts inside
+    if (!task || task.startsWith("/")) {
+      if (options.dashboard) {
+        // Defer task input to the dashboard TUI
+        await orchestrator.execute(undefined, {
+          agent: options.agent,
+          budget: options.budget,
+          verbose: options.verbose,
+          quiet: options.quiet,
+          dashboard: true,
+        });
+        return;
+      }
       task = await orchestrator.promptTask();
     }
 

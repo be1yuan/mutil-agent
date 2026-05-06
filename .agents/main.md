@@ -1,6 +1,6 @@
 ---
 agentType: main
-model: deepseek-v4-pro
+model: deepseek-v4-flash
 provider: deepseek
 description: Chief orchestrator that decomposes tasks, delegates to specialists, and synthesizes results
 maxSteps: 50

@@ -37,6 +37,15 @@ import type { AgentDefinition } from "../agent/types.js";
 import type { ModelProvider } from "../types/core.js";
 import type { SubAgentResult } from "../adapters/types.js";
 
+// ── Known model catalog (model → provider) ──
+
+const MODEL_CATALOG: { model: string; provider: ModelProvider; label: string }[] = [
+  { model: "deepseek-v4-pro",    provider: "deepseek", label: "DeepSeek V4 Pro" },
+  { model: "deepseek-v4-flash",  provider: "deepseek", label: "DeepSeek V4 Flash" },
+  { model: "glm-4.7",            provider: "zhipu",    label: "GLM 4.7 (Zhipu)" },
+  { model: "MiMo-V2.5-Pro",      provider: "mimo",     label: "MiMo V2.5 Pro" },
+];
+
 // ── Orchestrator ──
 
 class Orchestrator {
@@ -222,52 +231,43 @@ class Orchestrator {
         console.log(`\nContent:\n${result.content}`);
       }
 
-      // ── Post-task action menu (inner loop: save re-shows menu) ──
+      // ── Post-task prompt (inner loop: /save re-prompts, /exit quits) ──
       while (true) {
-        const action = await this.promptPostTaskAction(result, workspaceDir, quiet);
+        const action = await this.promptPostTaskAction(result, definition, workspaceDir, quiet);
         if (action.type === "exit") {
-          return; // Exit the entire conversation loop
+          return;
         }
-        if (action.type === "save") {
-          // Save is handled inside promptPostTaskAction; re-show menu
+        if (action.type === "save" || action.type === "model-switched") {
           continue;
         }
-        if (action.type === "continue") {
-          if (!conversationHistory) {
-            conversationHistory = [{ role: "user" as const, content: task }];
-          }
-          conversationHistory.push({ role: "user", content: action.message });
-          if (!quiet) {
-            console.log();
-            console.log(style.dim("─── Continuing conversation ───"));
-            console.log();
-          }
-          break; // Break inner loop to re-run agent
+        // Continue conversation
+        if (!conversationHistory) {
+          conversationHistory = [{ role: "user" as const, content: task }];
+        }
+        conversationHistory.push({ role: "user", content: action.message });
+        if (!quiet) {
+          console.log();
+          console.log(style.dim("─── Continuing conversation ───"));
+          console.log();
         }
         break;
       }
     }
   }
 
-  /** Prompt user for post-task action (continue / save / exit) */
+  /** Claude Code-style prompt: type to continue, /save to save, /models to switch, /exit to quit */
   private async promptPostTaskAction(
     result: import("../types/core.js").AgentResult,
+    definition: AgentDefinition,
     workspaceDir: string,
-    quiet: boolean
-  ): Promise<{ type: "exit" } | { type: "save" } | { type: "continue"; message: string }> {
+    _quiet: boolean
+  ): Promise<{ type: "exit" } | { type: "save" } | { type: "model-switched" } | { type: "continue"; message: string }> {
     const readline = await import("node:readline");
 
-    const statusIcon = result.status === "success" ? "✓" : result.status === "error" ? "✗" : "⚠";
-    const statusColor = result.status === "success" ? "\x1b[32m" : result.status === "error" ? "\x1b[31m" : "\x1b[33m";
-    const reset = "\x1b[0m";
-
-    console.log();
-    console.log(`${statusColor}${statusIcon}${reset} ${statusColor}${result.status.toUpperCase()}${reset}  Steps: ${result.steps}  Cost: ¥${result.cost.toFixed(4)}`);
-    console.log(style.dim("──────────────────────────────────────────────"));
-    console.log(`  ${style.bold("1.")} Continue chatting`);
-    console.log(`  ${style.bold("2.")} Save result to file`);
-    console.log(`  ${style.bold("3.")} Exit`);
-    console.log(style.dim("──────────────────────────────────────────────"));
+    // Compact status line
+    const icon = result.status === "success" ? style.success("✓") : result.status === "error" ? style.error("✗") : style.warning("⚠");
+    const currentModel = style.dim(`[${definition.model}]`);
+    console.log(`  ${icon} ${result.status} · ${result.steps} steps · ¥${result.cost.toFixed(4)} · ${currentModel} · /save /models /exit`);
 
     const rl = readline.createInterface({
       input: process.stdin,
@@ -275,41 +275,59 @@ class Orchestrator {
     });
 
     return new Promise((resolve) => {
-      rl.question(`  Select [1-3] or type a message to continue: `, (answer) => {
+      rl.question(style.bold("  > "), (answer) => {
         rl.close();
-        const trimmed = answer.trim();
+        const trimmed = answer.trim().toLowerCase();
 
-        if (trimmed === "2") {
-          // Save result
+        if (trimmed === "/exit" || trimmed === "/q" || trimmed === "") {
+          resolve({ type: "exit" });
+          return;
+        }
+
+        if (trimmed === "/save" || trimmed === "/s") {
           try {
             const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
             const filePath = path.join(workspaceDir, `output-${ts}.md`);
             fs.writeFileSync(filePath, result.content ?? "(no content)", "utf-8");
-            console.log(style.success(`  ✓ Saved to: ${filePath}`));
+            console.log(style.success(`  Saved to: ${filePath}`));
           } catch (e) {
-            console.error(style.error(`  ✗ Save failed: ${(e as Error).message}`));
+            console.error(style.error(`  Save failed: ${(e as Error).message}`));
           }
           resolve({ type: "save" });
-        } else if (trimmed === "3" || trimmed === "") {
-          resolve({ type: "exit" });
-        } else if (trimmed === "1") {
-          // Continue — need to get the follow-up message
+          return;
+        }
+
+        if (trimmed === "/models" || trimmed === "/model") {
+          console.log();
+          console.log(style.bold("  Models:"));
+          for (let i = 0; i < MODEL_CATALOG.length; i++) {
+            const m = MODEL_CATALOG[i];
+            const marker = m.model === definition.model ? style.success(" ●") : "  ";
+            console.log(`  ${marker} [${i + 1}] ${m.label}  ${style.dim(m.model)}`);
+          }
+          console.log();
+
           const rl2 = readline.createInterface({
             input: process.stdin,
             output: process.stdout,
           });
-          rl2.question(`  Your message: `, (msg) => {
+
+          rl2.question(style.bold(`  Select [1-${MODEL_CATALOG.length}, Enter to cancel]: `), (choice) => {
             rl2.close();
-            if (msg.trim()) {
-              resolve({ type: "continue", message: msg.trim() });
-            } else {
-              resolve({ type: "exit" });
+            const idx = parseInt(choice.trim(), 10) - 1;
+            if (idx >= 0 && idx < MODEL_CATALOG.length) {
+              const selected = MODEL_CATALOG[idx];
+              definition.model = selected.model;
+              definition.provider = selected.provider;
+              console.log(style.success(`  Switched to ${selected.label} (${selected.model})`));
             }
+            resolve({ type: "model-switched" });
           });
-        } else {
-          // Treat as follow-up message directly
-          resolve({ type: "continue", message: trimmed });
+          return;
         }
+
+        // Any other text = continue conversation
+        resolve({ type: "continue", message: answer.trim() });
       });
     });
   }
@@ -600,17 +618,14 @@ class Orchestrator {
     // Only "save" and "exit" — committee doesn't support continuation
   }
 
-  /** Post-task menu for committee mode (no continue — committee is one-shot) */
+  /** Claude Code-style prompt for committee (no continue — committee is one-shot) */
   private async promptCommitteePostTaskAction(
     content: string | undefined,
     workspaceDir: string
   ): Promise<{ type: "save" } | { type: "exit" }> {
     const readline = await import("node:readline");
 
-    console.log(style.dim("──────────────────────────────────────────────"));
-    console.log(`  ${style.bold("1.")} Save result to file`);
-    console.log(`  ${style.bold("2.")} Exit`);
-    console.log(style.dim("──────────────────────────────────────────────"));
+    console.log(style.dim("  /save to save  /exit to quit"));
 
     const rl = readline.createInterface({
       input: process.stdin,
@@ -618,18 +633,18 @@ class Orchestrator {
     });
 
     return new Promise((resolve) => {
-      rl.question(`  Select [1-2, default: 2]: `, (answer) => {
+      rl.question(style.bold("  > "), (answer) => {
         rl.close();
-        const trimmed = answer.trim();
+        const trimmed = answer.trim().toLowerCase();
 
-        if (trimmed === "1") {
+        if (trimmed === "/save" || trimmed === "/s") {
           try {
             const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
             const filePath = path.join(workspaceDir, `output-${ts}.md`);
             fs.writeFileSync(filePath, content ?? "(no content)", "utf-8");
-            console.log(style.success(`  ✓ Saved to: ${filePath}`));
+            console.log(style.success(`  Saved to: ${filePath}`));
           } catch (e) {
-            console.error(style.error(`  ✗ Save failed: ${(e as Error).message}`));
+            console.error(style.error(`  Save failed: ${(e as Error).message}`));
           }
           resolve({ type: "save" });
         } else {

@@ -458,6 +458,32 @@ class Orchestrator {
     }
   }
 
+  /** Interactively prompt for a task description (no subcommand mode) */
+  async promptTask(): Promise<string> {
+    const readline = await import("node:readline");
+    console.log();
+    console.log(style.bold("  Welcome to agent-orch — self-orchestrating multi-agent CLI"));
+    console.log(style.dim("  Type your task below and press Enter. Subcommands: run | committee | serve | list-agents | validate | init"));
+    console.log();
+
+    const rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout,
+    });
+
+    return new Promise((resolve) => {
+      rl.question("  > ", (answer) => {
+        rl.close();
+        const trimmed = answer.trim();
+        if (!trimmed) {
+          console.error(style.error("  Task cannot be empty."));
+          process.exit(1);
+        }
+        resolve(trimmed);
+      });
+    });
+  }
+
   /** Interactively prompt user to choose execution mode */
   async promptModeSelection(task: string): Promise<"single" | "committee"> {
     const readline = await import("node:readline");
@@ -847,6 +873,56 @@ program
   .option("--dashboard", "Include ink + react dependencies for TUI dashboard mode")
   .action(async (options: { dashboard?: boolean }) => {
     await initProject({ dashboard: options.dashboard });
+  });
+
+// Default action: "agent-orch" or "agent-orch <task>" (no subcommand) — Claude-like UX
+program
+  .argument("[task]", "Task description (prompts interactively if omitted)")
+  .option("-c, --config <path>", "Config file path", "orchestrator.yaml")
+  .option("-a, --agent <type>", "Agent type to use")
+  .option("-m, --mode <mode>", "Execution mode: single or committee", "single")
+  .option("-b, --budget <yuan>", "Budget limit in yuan (RMB)", parseFloat)
+  .option("-v, --verbose", "Show full tool arguments")
+  .option("-q, --quiet", "Only show final result")
+  .option("-d, --dashboard", "Enable TUI dashboard mode")
+  .option("-i, --interactive", "Interactively choose execution mode")
+  .action(async (task: string | undefined, options: {
+    config: string; agent?: string; mode?: string; budget?: number;
+    verbose?: boolean; quiet?: boolean; dashboard?: boolean; interactive?: boolean;
+  }) => {
+    const agentsDir = path.join(path.dirname(options.config), ".agents");
+    const orchestrator = new Orchestrator(options.config, agentsDir);
+    await orchestrator.init();
+
+    // No task given — prompt interactively
+    if (!task) {
+      task = await orchestrator.promptTask();
+    }
+
+    // Interactive mode selection
+    if (options.interactive && !options.dashboard) {
+      const mode = await orchestrator.promptModeSelection(task);
+      options.mode = mode;
+    }
+
+    if (options.mode === "committee") {
+      await orchestrator.committee(task, {
+        agents: "explore,coder,reviewer",
+        strategy: "concat",
+        budget: options.budget,
+        verbose: options.verbose,
+        quiet: options.quiet,
+        dashboard: options.dashboard,
+      });
+    } else {
+      await orchestrator.execute(task, {
+        agent: options.agent,
+        budget: options.budget,
+        verbose: options.verbose,
+        quiet: options.quiet,
+        dashboard: options.dashboard,
+      });
+    }
   });
 
 program.parse();

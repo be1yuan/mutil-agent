@@ -37,6 +37,15 @@ import type { AgentDefinition } from "../agent/types.js";
 import type { ModelProvider } from "../types/core.js";
 import type { SubAgentResult } from "../adapters/types.js";
 
+// ── Known model catalog (model → provider) ──
+
+const MODEL_CATALOG: { model: string; provider: ModelProvider; label: string }[] = [
+  { model: "deepseek-v4-pro",    provider: "deepseek", label: "DeepSeek V4 Pro" },
+  { model: "deepseek-v4-flash",  provider: "deepseek", label: "DeepSeek V4 Flash" },
+  { model: "glm-4.7",            provider: "zhipu",    label: "GLM 4.7 (Zhipu)" },
+  { model: "MiMo-V2.5-Pro",      provider: "mimo",     label: "MiMo V2.5 Pro" },
+];
+
 // ── Orchestrator ──
 
 class Orchestrator {
@@ -137,7 +146,9 @@ class Orchestrator {
       return;
     }
 
-    // Standard mode
+    // Standard mode — task is always defined here (dashboard returns early)
+    const resolvedTask = task as string;
+
     if (!quiet) {
       const modeLabel = mode === "single" ? "single agent" : mode === "auto" ? "self-orchestration" : mode;
       console.log(renderBanner(agentType, definition.model, budget));
@@ -232,52 +243,112 @@ class Orchestrator {
         console.log(`\nContent:\n${result.content}`);
       }
 
-      // ── Post-task action menu (inner loop: save re-shows menu) ──
+      // ── Post-task prompt (inner loop: /save re-prompts, /exit quits) ──
       while (true) {
-        const action = await this.promptPostTaskAction(result, workspaceDir, quiet);
+        const action = await this.promptPostTaskAction(result, definition, workspaceDir, quiet);
         if (action.type === "exit") {
-          return; // Exit the entire conversation loop
+          return;
         }
-        if (action.type === "save") {
-          // Save is handled inside promptPostTaskAction; re-show menu
+        if (action.type === "save" || action.type === "model-switched") {
           continue;
         }
-        if (action.type === "continue") {
-          if (!conversationHistory) {
-            conversationHistory = [{ role: "user" as const, content: task }];
-          }
-          conversationHistory.push({ role: "user", content: action.message });
-          if (!quiet) {
-            console.log();
-            console.log(style.dim("─── Continuing conversation ───"));
-            console.log();
-          }
-          break; // Break inner loop to re-run agent
+        // Continue conversation
+        if (!conversationHistory) {
+          conversationHistory = [{ role: "user" as const, content: resolvedTask }];
+        }
+        conversationHistory.push({ role: "user", content: action.message });
+        if (!quiet) {
+          console.log();
+          console.log(style.dim("─── Continuing conversation ───"));
+          console.log();
         }
         break;
       }
     }
   }
 
-  /** Prompt user for post-task action (continue / save / exit) */
+  /** Claude Code-style prompt: type to continue, /save to save, /model to switch, /exit to quit */
   private async promptPostTaskAction(
     result: import("../types/core.js").AgentResult,
+    definition: AgentDefinition,
     workspaceDir: string,
-    quiet: boolean
-  ): Promise<{ type: "exit" } | { type: "save" } | { type: "continue"; message: string }> {
+    _quiet: boolean
+  ): Promise<{ type: "exit" } | { type: "save" } | { type: "model-switched" } | { type: "continue"; message: string }> {
+    const readline = await import("node:readline");
+    const icon = result.status === "success" ? style.success("✓") : result.status === "error" ? style.error("✗") : style.warning("⚠");
+    const currentModel = style.dim(`[${definition.model}]`);
+
+    while (true) {
+      console.log(`  ${icon} ${result.status} · ${result.steps} steps · ¥${result.cost.toFixed(4)} · ${currentModel} · /save /model /exit`);
+
+      const rl = readline.createInterface({
+        input: process.stdin,
+        output: process.stdout,
+      });
+
+      const raw = await new Promise<string>((resolve) => {
+        rl.question(style.bold("  > "), (ans) => {
+          rl.close();
+          resolve(ans.trim());
+        });
+      });
+      const answer = raw.toLowerCase();
+
+      if (answer === "/exit" || answer === "/q" || answer === "") {
+        return { type: "exit" };
+      }
+
+      if (answer === "/save" || answer === "/s") {
+        try {
+          const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+          const filePath = path.join(workspaceDir, `output-${ts}.md`);
+          fs.writeFileSync(filePath, result.content ?? "(no content)", "utf-8");
+          console.log(style.success(`  Saved to: ${filePath}`));
+        } catch (e) {
+          console.error(style.error(`  Save failed: ${(e as Error).message}`));
+        }
+        return { type: "save" };
+      }
+
+      if (answer === "/model" || answer === "/models") {
+        await this.showModelPicker(definition);
+        return { type: "model-switched" };
+      }
+
+      if (answer === "/help" || answer === "/h" || answer === "/") {
+        console.log();
+        console.log(style.bold("  Slash commands:"));
+        console.log(style.dim("  /save   Save result to file"));
+        console.log(style.dim("  /model  Switch AI model"));
+        console.log(style.dim("  /exit   Exit"));
+        console.log();
+        continue;
+      }
+
+      if (answer.startsWith("/")) {
+        console.log(style.warning(`  Unknown command: ${answer.split(/\s+/)[0]}`));
+        console.log(style.dim("  Type /help to see available commands."));
+        console.log();
+        continue;
+      }
+
+      // Any other text = continue conversation (use original casing)
+      return { type: "continue", message: raw };
+    }
+  }
+
+  /** Show interactive model picker and apply selection to the given definition */
+  private async showModelPicker(definition: AgentDefinition): Promise<boolean> {
     const readline = await import("node:readline");
 
-    const statusIcon = result.status === "success" ? "✓" : result.status === "error" ? "✗" : "⚠";
-    const statusColor = result.status === "success" ? "\x1b[32m" : result.status === "error" ? "\x1b[31m" : "\x1b[33m";
-    const reset = "\x1b[0m";
-
     console.log();
-    console.log(`${statusColor}${statusIcon}${reset} ${statusColor}${result.status.toUpperCase()}${reset}  Steps: ${result.steps}  Cost: ¥${result.cost.toFixed(4)}`);
-    console.log(style.dim("──────────────────────────────────────────────"));
-    console.log(`  ${style.bold("1.")} Continue chatting`);
-    console.log(`  ${style.bold("2.")} Save result to file`);
-    console.log(`  ${style.bold("3.")} Exit`);
-    console.log(style.dim("──────────────────────────────────────────────"));
+    console.log(style.bold("  Models:"));
+    for (let i = 0; i < MODEL_CATALOG.length; i++) {
+      const m = MODEL_CATALOG[i];
+      const marker = m.model === definition.model ? style.success(" ●") : "  ";
+      console.log(`  ${marker} [${i + 1}] ${m.label}  ${style.dim(m.model)}`);
+    }
+    console.log();
 
     const rl = readline.createInterface({
       input: process.stdin,
@@ -285,48 +356,25 @@ class Orchestrator {
     });
 
     return new Promise((resolve) => {
-      rl.question(`  Select [1-3] or type a message to continue: `, (answer) => {
+      rl.question(style.bold(`  Select [1-${MODEL_CATALOG.length}, Enter to cancel]: `), (choice) => {
         rl.close();
-        const trimmed = answer.trim();
-
-        if (trimmed === "2") {
-          // Save result
-          try {
-            const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-            const filePath = path.join(workspaceDir, `output-${ts}.md`);
-            fs.writeFileSync(filePath, result.content ?? "(no content)", "utf-8");
-            console.log(style.success(`  ✓ Saved to: ${filePath}`));
-          } catch (e) {
-            console.error(style.error(`  ✗ Save failed: ${(e as Error).message}`));
-          }
-          resolve({ type: "save" });
-        } else if (trimmed === "3" || trimmed === "") {
-          resolve({ type: "exit" });
-        } else if (trimmed === "1") {
-          // Continue — need to get the follow-up message
-          const rl2 = readline.createInterface({
-            input: process.stdin,
-            output: process.stdout,
-          });
-          rl2.question(`  Your message: `, (msg) => {
-            rl2.close();
-            if (msg.trim()) {
-              resolve({ type: "continue", message: msg.trim() });
-            } else {
-              resolve({ type: "exit" });
-            }
-          });
+        const idx = parseInt(choice.trim(), 10) - 1;
+        if (idx >= 0 && idx < MODEL_CATALOG.length) {
+          const selected = MODEL_CATALOG[idx];
+          definition.model = selected.model;
+          definition.provider = selected.provider;
+          console.log(style.success(`  Switched to ${selected.label} (${selected.model})`));
+          resolve(true);
         } else {
-          // Treat as follow-up message directly
-          resolve({ type: "continue", message: trimmed });
+          resolve(false);
         }
       });
     });
   }
 
-  /** Execute task with ink TUI dashboard */
+  /** Execute task with ink TUI dashboard. If task is undefined, the TUI prompts for it. */
   private async executeWithDashboard(
-    task: string,
+    task: string | undefined,
     definition: AgentDefinition,
     budget: number,
     agentType: string,
@@ -398,10 +446,23 @@ class Orchestrator {
         provider,
         budget,
         maxSteps: definition.maxSteps,
+        initialTask: task,
         onSave,
       }),
       { patchConsole: false }
     );
+
+    // If no task provided, wait for user to enter it in the TUI
+    const actualTask = task ?? await bridge.waitForTask();
+
+    // User cancelled task input (Esc) — clean up and exit
+    if (!actualTask) {
+      unmount();
+      if (useAltScreen) {
+        process.stdout.write("\x1b[?1049l");
+      }
+      return;
+    }
 
     // ── Conversation loop (dashboard mode) ──
     const loop = new AgentLoop(deps);
@@ -411,8 +472,8 @@ class Orchestrator {
       while (true) {
         // Run the agent loop
         const result = conversationHistory
-          ? await loop.run(task, definition, budget, { initialHistory: conversationHistory })
-          : await loop.run(task, definition, budget);
+          ? await loop.run(actualTask, definition, budget, { initialHistory: conversationHistory })
+          : await loop.run(actualTask, definition, budget);
 
         // Preserve history for continuation
         if (result.history) {
@@ -431,7 +492,7 @@ class Orchestrator {
 
         if (action.type === "continue") {
           if (!conversationHistory) {
-            conversationHistory = [{ role: "user" as const, content: task }];
+            conversationHistory = [{ role: "user" as const, content: actualTask }];
           }
           conversationHistory.push({ role: "user", content: action.message });
           bridge.resetForContinuation();
@@ -460,6 +521,80 @@ class Orchestrator {
       console.error(`Error: ${msg}`);
     }
   }
+
+  listAgents(): void {
+    console.log("Available agents:");
+    for (const [agentType, def] of this.agentDefinitions) {
+      console.log(`  ${agentType}: ${def.description ?? "No description"} (${def.model})`);
+    }
+  }
+
+  /** Interactively prompt for a task description (no subcommand mode).
+   *  Slash commands (/model, /exit) are handled inline and re-prompt. */
+  async promptTask(): Promise<string> {
+    const readline = await import("node:readline");
+    console.log();
+    console.log(style.bold("  Welcome to agent-orch — self-orchestrating multi-agent CLI"));
+    console.log(style.dim("  Type your task below and press Enter. Subcommands: run | committee | serve | list-agents | validate | init"));
+    console.log(style.dim("  /model to switch model  /exit to quit  /help for commands"));
+    console.log();
+
+    while (true) {
+      const rl = readline.createInterface({
+        input: process.stdin,
+        output: process.stdout,
+      });
+
+      const answer = await new Promise<string>((resolve) => {
+        rl.question("  > ", (ans) => {
+          rl.close();
+          resolve(ans.trim());
+        });
+      });
+
+      const trimmed = answer.trim();
+      const lower = trimmed.toLowerCase();
+
+      if (lower === "/exit" || lower === "/q") {
+        console.log(style.dim("  Goodbye."));
+        process.exit(0);
+      }
+
+      if (lower === "/model" || lower === "/models") {
+        const def = this.agentDefinitions.get("main");
+        if (def) {
+          await this.showModelPicker(def);
+          console.log();
+        }
+        continue;
+      }
+
+      if (lower === "/help" || lower === "/h" || lower === "/") {
+        console.log();
+        console.log(style.bold("  Slash commands:"));
+        console.log(style.dim("  /model  Switch AI model"));
+        console.log(style.dim("  /exit   Exit"));
+        console.log();
+        continue;
+      }
+
+      if (lower.startsWith("/")) {
+        console.log(style.warning(`  Unknown command: ${lower.split(/\s+/)[0]}`));
+        console.log(style.dim("  Type /help to see available commands."));
+        console.log();
+        continue;
+      }
+
+      if (!trimmed) {
+        console.error(style.error("  Task cannot be empty. Type /help for commands, /exit to quit."));
+        console.log();
+        continue;
+      }
+
+      return trimmed;
+    }
+  }
+
 
   /** Interactively prompt user to choose execution mode */
   async promptModeSelection(): Promise<"single" | "auto" | "committee"> {
@@ -591,43 +726,63 @@ class Orchestrator {
     // Only "save" and "exit" — committee doesn't support continuation
   }
 
-  /** Post-task menu for committee mode (no continue — committee is one-shot) */
+  /** Claude Code-style prompt for committee (no continue — committee is one-shot) */
   private async promptCommitteePostTaskAction(
     content: string | undefined,
     workspaceDir: string
   ): Promise<{ type: "save" } | { type: "exit" }> {
     const readline = await import("node:readline");
 
-    console.log(style.dim("──────────────────────────────────────────────"));
-    console.log(`  ${style.bold("1.")} Save result to file`);
-    console.log(`  ${style.bold("2.")} Exit`);
-    console.log(style.dim("──────────────────────────────────────────────"));
+    while (true) {
+      console.log(style.dim("  /save to save  /exit to quit"));
 
-    const rl = readline.createInterface({
-      input: process.stdin,
-      output: process.stdout,
-    });
-
-    return new Promise((resolve) => {
-      rl.question(`  Select [1-2, default: 2]: `, (answer) => {
-        rl.close();
-        const trimmed = answer.trim();
-
-        if (trimmed === "1") {
-          try {
-            const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-            const filePath = path.join(workspaceDir, `output-${ts}.md`);
-            fs.writeFileSync(filePath, content ?? "(no content)", "utf-8");
-            console.log(style.success(`  ✓ Saved to: ${filePath}`));
-          } catch (e) {
-            console.error(style.error(`  ✗ Save failed: ${(e as Error).message}`));
-          }
-          resolve({ type: "save" });
-        } else {
-          resolve({ type: "exit" });
-        }
+      const rl = readline.createInterface({
+        input: process.stdin,
+        output: process.stdout,
       });
-    });
+
+      const answer = await new Promise<string>((resolve) => {
+        rl.question(style.bold("  > "), (ans) => {
+          rl.close();
+          resolve(ans.trim().toLowerCase());
+        });
+      });
+
+      if (answer === "/exit" || answer === "/q" || answer === "") {
+        return { type: "exit" };
+      }
+
+      if (answer === "/save" || answer === "/s") {
+        try {
+          const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+          const filePath = path.join(workspaceDir, `output-${ts}.md`);
+          fs.writeFileSync(filePath, content ?? "(no content)", "utf-8");
+          console.log(style.success(`  Saved to: ${filePath}`));
+        } catch (e) {
+          console.error(style.error(`  Save failed: ${(e as Error).message}`));
+        }
+        return { type: "save" };
+      }
+
+      if (answer === "/help" || answer === "/h" || answer === "/") {
+        console.log();
+        console.log(style.bold("  Slash commands:"));
+        console.log(style.dim("  /save  Save result to file"));
+        console.log(style.dim("  /exit  Exit"));
+        console.log();
+        continue;
+      }
+
+      if (answer.startsWith("/")) {
+        console.log(style.warning(`  Unknown command: ${answer.split(/\s+/)[0]}`));
+        console.log(style.dim("  Type /help to see available commands."));
+        console.log();
+        continue;
+      }
+
+      // Any other input = exit
+      return { type: "exit" };
+    }
   }
 
   /** Start the HTTP API server */
@@ -865,6 +1020,68 @@ program
   .option("--dashboard", "Include ink + react dependencies for TUI dashboard mode")
   .action(async (options: { dashboard?: boolean }) => {
     await initProject({ dashboard: options.dashboard });
+  });
+
+// Default action: "agent-orch" or "agent-orch <task>" (no subcommand) — Claude-like UX
+program
+  .argument("[task]", "Task description (prompts interactively if omitted)")
+  .option("-c, --config <path>", "Config file path", "orchestrator.yaml")
+  .option("-a, --agent <type>", "Agent type to use")
+  .option("-m, --mode <mode>", "Execution mode: single or committee", "single")
+  .option("-b, --budget <yuan>", "Budget limit in yuan (RMB)", parseFloat)
+  .option("-v, --verbose", "Show full tool arguments")
+  .option("-q, --quiet", "Only show final result")
+  .option("-d, --dashboard", "Enable TUI dashboard mode")
+  .option("-i, --interactive", "Interactively choose execution mode")
+  .action(async (task: string | undefined, options: {
+    config: string; agent?: string; mode?: string; budget?: number;
+    verbose?: boolean; quiet?: boolean; dashboard?: boolean; interactive?: boolean;
+  }) => {
+    const agentsDir = path.join(path.dirname(options.config), ".agents");
+    const orchestrator = new Orchestrator(options.config, agentsDir);
+    await orchestrator.init();
+
+    // No task given (or slash command like /models) — prompt interactively
+    // Exception: --dashboard without a task enters TUI first and prompts inside
+    if (!task || task.startsWith("/")) {
+      if (options.dashboard) {
+        // Defer task input to the dashboard TUI
+        await orchestrator.execute(undefined, {
+          agent: options.agent,
+          budget: options.budget,
+          verbose: options.verbose,
+          quiet: options.quiet,
+          dashboard: true,
+        });
+        return;
+      }
+      task = await orchestrator.promptTask();
+    }
+
+    // Interactive mode selection
+    if (options.interactive && !options.dashboard) {
+      const mode = await orchestrator.promptModeSelection(task);
+      options.mode = mode;
+    }
+
+    if (options.mode === "committee") {
+      await orchestrator.committee(task, {
+        agents: "explore,coder,reviewer",
+        strategy: "concat",
+        budget: options.budget,
+        verbose: options.verbose,
+        quiet: options.quiet,
+        dashboard: options.dashboard,
+      });
+    } else {
+      await orchestrator.execute(task, {
+        agent: options.agent,
+        budget: options.budget,
+        verbose: options.verbose,
+        quiet: options.quiet,
+        dashboard: options.dashboard,
+      });
+    }
   });
 
 program.parse();

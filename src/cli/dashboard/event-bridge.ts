@@ -179,6 +179,24 @@ export class DashboardEventBridge extends EventEmitter {
     }
   }
 
+  private taskResolve: ((task: string) => void) | null = null;
+
+  /** Wait for the user to enter a task in the TUI (initial task input mode) */
+  waitForTask(): Promise<string> {
+    return new Promise((resolve) => {
+      this.taskResolve = resolve;
+    });
+  }
+
+  /** Resolve the pending task input (called by Dashboard keyboard handler) */
+  resolveTask(task: string): void {
+    if (this.taskResolve) {
+      const resolve = this.taskResolve;
+      this.taskResolve = null;
+      resolve(task);
+    }
+  }
+
   /** Reset state for a new conversation round */
   resetForContinuation(): void {
     this.pendingApproval = null;

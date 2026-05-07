@@ -45,6 +45,8 @@ interface AppProps {
   provider: string;
   budget: number;
   maxSteps: number;
+  /** If not provided, App starts in task input mode before running */
+  initialTask?: string;
   /** Called when user chooses to save the result. Returns the saved file path. */
   onSave?: (content: string) => string | undefined;
 }
@@ -65,6 +67,7 @@ export function App({
   provider,
   budget,
   maxSteps,
+  initialTask,
   onSave,
 }: AppProps) {
   const { exit } = useApp();
@@ -84,6 +87,10 @@ export function App({
   const [finalSteps, setFinalSteps] = useState(0);
   const [finalCost, setFinalCost] = useState(0);
   const [savedPath, setSavedPath] = useState<string | undefined>(undefined);
+
+  // Task input mode (when no initialTask provided)
+  const [isTaskInput, setIsTaskInput] = useState(!initialTask);
+  const [taskInput, setTaskInput] = useState("");
 
   // Action menu state
   const [selectedAction, setSelectedAction] = useState(0); // 0-based index into ACTION_ITEMS
@@ -273,6 +280,30 @@ export function App({
   // ── Keyboard input ──
 
   useInput((input, key) => {
+    // Task input mode (before agent starts — no initialTask)
+    if (isTaskInput) {
+      if (key.escape) {
+        bridge.resolveTask(""); // empty signals cancellation
+        setIsTaskInput(false);
+        return;
+      }
+      if (key.return) {
+        if (taskInput.trim()) {
+          bridge.resolveTask(taskInput.trim());
+          setIsTaskInput(false);
+        }
+        return;
+      }
+      if (key.backspace || key.delete) {
+        setTaskInput((prev) => prev.slice(0, -1));
+        return;
+      }
+      if (input && !key.ctrl && !key.meta) {
+        setTaskInput((prev) => prev + input);
+      }
+      return;
+    }
+
     // Approval flow (unchanged)
     if (approvalRequest) {
       const k = input.toLowerCase();
@@ -347,6 +378,32 @@ export function App({
   const displayLines = contentLines.slice(0, 30);
   const hasMore = contentLines.length > 30;
   const canSave = isDone && finalContent && onSave && !savedPath;
+
+  // Task input screen (no initialTask)
+  if (isTaskInput) {
+    return (
+      <Box flexDirection="column" borderStyle="round" borderColor="cyan" paddingX={1} paddingY={1}>
+        <Box marginBottom={1}>
+          <Text bold color="cyan">agent-orch · {agentType} · {model}</Text>
+          <Text dimColor>  Budget: ¥{budget.toFixed(2)}  |  Max steps: {maxSteps}</Text>
+        </Box>
+        <Box>
+          <Text dimColor>{"─".repeat(50)}</Text>
+        </Box>
+        <Box marginY={1}>
+          <Text bold>Enter your task:</Text>
+        </Box>
+        <Box>
+          <Text color="gray">{"> "}</Text>
+          <Text bold>{taskInput}</Text>
+          <Text color="gray">█</Text>
+        </Box>
+        <Box marginTop={1}>
+          <Text dimColor>Press Enter to submit  Esc to cancel</Text>
+        </Box>
+      </Box>
+    );
+  }
 
   return (
     <Box flexDirection="column" width="100%" borderStyle="round" borderColor={isDone ? statusColor : "cyan"}>

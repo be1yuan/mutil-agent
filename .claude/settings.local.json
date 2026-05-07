@@ -13,7 +13,10 @@
       "WebSearch",
       "Bash(npm view *)",
       "Bash(gh pr *)",
-      "Bash(pnpm run *)"
+      "Bash(pnpm run *)",
+      "Bash(awk -F: '{sum+=$2} END {print sum}')",
+      "Bash(xargs wc *)",
+      "Bash(npx tsx *)"
     ]
   }
 }

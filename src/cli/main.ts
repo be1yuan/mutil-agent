@@ -118,7 +118,7 @@ class Orchestrator {
   }
 
   async execute(
-    task: string,
+    task: string | undefined,
     options: { agent?: string; budget?: number; verbose?: boolean; quiet?: boolean; dashboard?: boolean; mode?: "single" | "auto" | "committee" }
   ): Promise<void> {
     const agentType = options.agent ?? "main";
@@ -147,7 +147,7 @@ class Orchestrator {
     }
 
     // Standard mode — task is always defined here (dashboard returns early)
-    const resolvedTask = task as string;
+    const resolvedTask = task!;
 
     if (!quiet) {
       const modeLabel = mode === "single" ? "single agent" : mode === "auto" ? "self-orchestration" : mode;
@@ -224,8 +224,8 @@ class Orchestrator {
     while (true) {
       // Run the agent loop
       const result = conversationHistory
-        ? await loop.run(task, effectiveDefinition, budget, { initialHistory: conversationHistory })
-        : await loop.run(task, effectiveDefinition, budget);
+        ? await loop.run(resolvedTask, effectiveDefinition, budget, { initialHistory: conversationHistory })
+        : await loop.run(resolvedTask, effectiveDefinition, budget);
 
       // Preserve history for continuation
       if (result.history) {
@@ -634,15 +634,6 @@ class Orchestrator {
       });
     });
   }
-
-  listAgents(): void {
-    console.log("Available agents:");
-    for (const [agentType, def] of this.agentDefinitions) {
-      console.log(`  ${agentType}: ${def.description ?? "No description"} (${def.model})`);
-    }
-  }
-
-
 
   async committee(
     task: string,
@@ -1060,7 +1051,7 @@ program
 
     // Interactive mode selection
     if (options.interactive && !options.dashboard) {
-      const mode = await orchestrator.promptModeSelection(task);
+      const mode = await orchestrator.promptModeSelection();
       options.mode = mode;
     }
 

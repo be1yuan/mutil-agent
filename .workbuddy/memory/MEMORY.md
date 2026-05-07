@@ -5,6 +5,9 @@
 - 设计文档: DESIGN-v6 ~ v9
 - 进度文档: PROGRESS.md
 - v0.1 ~ v0.6 全部完成，v1.0 待规划
+- ✅ 端到端验证通过：npm link + agent-orch run/list-agents/validate/init/serve 全部可用
+- 真实 LLM 调用成功（DeepSeek V4-Pro + explore agent + Glob/Read 工具）
+- ✅ 交互式 UX：任务后操作菜单（继续聊天/保存/退出）、-i 交互式模式选择、-m single/committee
 - 技术栈: TypeScript + Node.js + Anthropic SDK + ink + React + Vitest + esbuild
 
 ## 架构决策
@@ -37,8 +40,14 @@
 - main: deepseek-v4-pro，全能调度 + task 自编排
 - coder: GLM-4.7 (zhipu)，代码编写 + 工具执行
 - explore: deepseek-v4-flash，只读代码探索
-- reviewer: deepseek-v4-flash，代码审查
+- reviewer: deepseek-v4-pro，代码审查
 - architect: MiMo-V2.5-Pro (mimo)，只读架构顾问（不写代码）
+
+## 执行模式
+- **single**: main agent 直接执行，无 task 工具（快速）
+- **auto**: main agent 自编排，AI 决定是否通过 task 派生子 agent（默认）
+- **committee**: explore + coder + reviewer + architect 并行执行
+- CLI: `-m <single|auto|committee>` 或 `-i` 交互选择
 
 ## v0.6 进度（100% 完成）
 - ✅ esbuild 构建 + package.json 元数据 + LICENSE + templates
@@ -49,7 +58,13 @@
 - ✅ validate 命令增强（ink/react/cheerio/git/Node.js/.env 检测）
 - ✅ Prometheus metrics（MetricsRegistry + /api/metrics 端点，8 测试）
 - ✅ 代码审查修复（12 项 bug：孤立 tool_result、时序安全、标签注入等）
-- 📋 v1.0 待做: init 命令、Dockerfile、CI/CD、npm publish
+- 📋 v1.0 待做: Dockerfile、CI/CD、npm publish（init 命令已实现）
+
+- AgentLoop.run() 支持 options.initialHistory 参数和 result.history 返回，用于多轮对话
+- EventBridge 新增 waitForUserAction()/resolveUserAction() 支持 Dashboard 继续对话
+- AgentResult.history 类型为 (Message | ToolResult)[]，不是 Message[]（因包含 tool_result）
+- 标准模式用 readline 交互菜单，Dashboard 模式用 ink 可选择菜单（上下箭头+回车+数字快捷键）
+- committee 模式只有保存/退出，没有继续聊天（多 agent 并行无对话上下文可延续）
 
 ## 已知 Bug 和注意事项
 - `const IDLE` 声明顺序必须在 `let searchQueue` 之前（TDZ 问题）
@@ -61,3 +76,5 @@
 - Mailbox.send() 接收 Omit<MailMessage, "id"|"timestamp"> 对象，不是独立参数
 - Mailbox.cleanup() 只接收一个参数 maxAgeMs，不是 (agentType, maxAgeMs)
 - Mailbox.waitFor() 返回单个 MailMessage，不是数组
+- **DeepSeek thinking mode**：assistant 消息中的 thinking block 必须在下一轮对话中原样回传，否则 API 返回 400 invalid_request_error（"content[].thinking must be passed back"）
+- ChatResponse.contentBlocks 包含完整 ContentBlock（含 ThinkingBlock），AgentLoop 优先用它存储 history

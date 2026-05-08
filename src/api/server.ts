@@ -24,6 +24,8 @@ import { TaskManager, type SubmitTaskRequest } from "./task-manager.js";
 import { AgentLoopDeps } from "../agent/agent-loop.js";
 import { initSSE } from "./sse.js";
 import { getLogger } from "../observability/logger.js";
+import { WorkflowEngine, WorkflowStateStore, loadWorkflow } from "../workflow/index.js";
+import type { WorkflowDefinition } from "../workflow/index.js";
 
 // ── Types ──
 
@@ -75,6 +77,8 @@ export class ApiServer {
   private taskManager?: TaskManager;
   private rateLimiter = new RateLimiter(60, 60_000); // 60 req/min per IP
   private cleanupTimer?: ReturnType<typeof setInterval>;
+  private workflowStateStore?: WorkflowStateStore;
+  private workflowEngine?: WorkflowEngine;
 
   constructor(
     private config: OrchestratorConfig,
@@ -91,6 +95,20 @@ export class ApiServer {
       this.agentDefinitions,
       this.config.security.maxConcurrentAgents
     );
+
+    // Initialize workflow engine if workflows config exists
+    if (this.config.workflows) {
+      this.workflowStateStore = new WorkflowStateStore(
+        this.config.workflows.stateDir
+      );
+      await this.workflowStateStore.init();
+
+      this.workflowEngine = new WorkflowEngine({
+        agentLoopDeps: this.deps,
+        stateStore: this.workflowStateStore,
+        onCheckpoint: async () => true, // Auto-approve in API mode
+      });
+    }
 
     this.server = http.createServer((req, res) => {
       this.handleRequest(req, res);
@@ -297,6 +315,196 @@ export class ApiServer {
           });
           return;
         }
+      }
+
+      // ── Workflow endpoints ──
+
+      // Start a workflow
+      if (path === "/api/workflows" && method === "POST") {
+        if (!this.workflowEngine) {
+          this.json(res, 404, { error: "Workflows not enabled" });
+          return;
+        }
+
+        let body: string;
+        try {
+          body = await this.readBody(req);
+        } catch (err) {
+          if (err instanceof Error && err.message === "Request body too large") {
+            this.json(res, 413, { error: "Request body too large (max 1MB)" });
+            return;
+          }
+          throw err;
+        }
+
+        let request: { file: string; budget?: number; variables?: Record<string, string> };
+        try {
+          request = JSON.parse(body);
+        } catch {
+          this.json(res, 400, { error: "Invalid JSON" });
+          return;
+        }
+
+        if (!request.file) {
+          this.json(res, 400, { error: "file is required" });
+          return;
+        }
+
+        // Load workflow definition
+        let definition: WorkflowDefinition;
+        try {
+          definition = await loadWorkflow(request.file);
+        } catch (err) {
+          this.json(res, 400, { error: `Failed to load workflow: ${(err as Error).message}` });
+          return;
+        }
+
+        const budget = request.budget ?? this.config.budget.maxYuan;
+
+        // Create run state first so we can return the ID immediately
+        const stateStore = this.workflowStateStore!;
+        const stepIds = definition.steps.map((s) => s.id);
+        const variables = { ...definition.variables, ...request.variables };
+        const initialRun = await stateStore.createRun(definition.name, variables, stepIds);
+
+        // Return 201 immediately with the run ID
+        this.json(res, 201, {
+          id: initialRun.id,
+          workflowName: initialRun.workflowName,
+          status: initialRun.status,
+          startedAt: initialRun.startedAt,
+        });
+
+        // Execute workflow in background
+        const engine = this.workflowEngine;
+        engine.runWithExisting(initialRun.id, definition, budget).catch((err) => {
+          const logger = getLogger();
+          logger.error("api.workflow.background_error", {
+            runId: initialRun.id,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        });
+        return;
+      }
+
+      // Get workflow run status
+      const wfMatch = path.match(/^\/api\/workflows\/([a-z0-9_-]+)$/);
+      if (wfMatch && method === "GET") {
+        if (!this.workflowStateStore) {
+          this.json(res, 404, { error: "Workflows not enabled" });
+          return;
+        }
+
+        const runId = wfMatch[1];
+        const run = await this.workflowStateStore.load(runId);
+
+        if (!run) {
+          this.json(res, 404, { error: "Workflow run not found" });
+          return;
+        }
+
+        this.json(res, 200, {
+          id: run.id,
+          workflowName: run.workflowName,
+          status: run.status,
+          steps: run.steps,
+          variables: run.variables,
+          totalCost: run.totalCost,
+          startedAt: run.startedAt,
+          completedAt: run.completedAt,
+          currentStepId: run.currentStepId,
+        });
+        return;
+      }
+
+      // Resume a paused workflow
+      const wfResumeMatch = path.match(/^\/api\/workflows\/([a-z0-9_-]+)\/resume$/);
+      if (wfResumeMatch && method === "POST") {
+        if (!this.workflowEngine) {
+          this.json(res, 404, { error: "Workflows not enabled" });
+          return;
+        }
+
+        const runId = wfResumeMatch[1];
+        const existingRun = await this.workflowStateStore!.load(runId);
+
+        if (!existingRun) {
+          this.json(res, 404, { error: "Workflow run not found" });
+          return;
+        }
+
+        if (existingRun.status !== "paused") {
+          this.json(res, 400, { error: `Workflow is not paused (status: ${existingRun.status})` });
+          return;
+        }
+
+        // Need the file path to resume
+        let body: string;
+        try {
+          body = await this.readBody(req);
+        } catch {
+          body = "{}";
+        }
+
+        let request: { file: string; budget?: number };
+        try {
+          request = JSON.parse(body);
+        } catch {
+          this.json(res, 400, { error: "Invalid JSON" });
+          return;
+        }
+
+        if (!request.file) {
+          this.json(res, 400, { error: "file is required" });
+          return;
+        }
+
+        let definition: WorkflowDefinition;
+        try {
+          definition = await loadWorkflow(request.file);
+        } catch (err) {
+          this.json(res, 400, { error: `Failed to load workflow: ${(err as Error).message}` });
+          return;
+        }
+
+        const budget = request.budget ?? this.config.budget.maxYuan;
+
+        try {
+          const run = await this.workflowEngine.resumeWithDefinition(runId, definition, budget);
+
+          this.json(res, 200, {
+            id: run.id,
+            workflowName: run.workflowName,
+            status: run.status,
+            totalCost: run.totalCost,
+            startedAt: run.startedAt,
+            completedAt: run.completedAt,
+          });
+        } catch (err) {
+          this.json(res, 500, { error: `Resume failed: ${(err as Error).message}` });
+        }
+        return;
+      }
+
+      // List workflow runs
+      if (path === "/api/workflows" && method === "GET") {
+        if (!this.workflowStateStore) {
+          this.json(res, 404, { error: "Workflows not enabled" });
+          return;
+        }
+
+        const runs = await this.workflowStateStore.listRuns();
+        this.json(res, 200, {
+          runs: runs.map((r) => ({
+            id: r.id,
+            workflowName: r.workflowName,
+            status: r.status,
+            totalCost: r.totalCost,
+            startedAt: r.startedAt,
+            completedAt: r.completedAt,
+          })),
+        });
+        return;
       }
 
       // 404

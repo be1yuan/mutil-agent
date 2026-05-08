@@ -32,6 +32,13 @@ import {
 import { initProject } from "./init.js";
 import { summarizeToolArgs, style } from "./ansi.js";
 import { DashboardEventBridge } from "./dashboard/event-bridge.js";
+import {
+  WorkflowEngine,
+  WorkflowStateStore,
+  loadWorkflow,
+  type WorkflowDefinition,
+  type WorkflowRun,
+} from "../workflow/index.js";
 import type { ModelAdapter } from "../adapters/types.js";
 import type { AgentDefinition } from "../agent/types.js";
 import type { ModelProvider } from "../types/core.js";
@@ -832,6 +839,383 @@ class Orchestrator {
     process.on("SIGINT", shutdown);
     process.on("SIGTERM", shutdown);
   }
+
+  // ── Workflow methods ──
+
+  async runWorkflow(
+    filePath: string,
+    options: { budget?: number; quiet?: boolean; variables?: Record<string, string> }
+  ): Promise<void> {
+    const quiet = options.quiet ?? false;
+    const budget = options.budget ?? this.config.budget.maxYuan;
+    const workspaceDir = path.dirname(path.resolve(this.configPath));
+    const wfConfig = this.config.workflows;
+    const stateDir = path.join(workspaceDir, wfConfig?.stateDir ?? ".workflow-state");
+
+    // Load workflow definition
+    let definition: WorkflowDefinition;
+    try {
+      definition = await loadWorkflow(filePath);
+    } catch (err) {
+      console.error(style.error(`  Failed to load workflow: ${(err as Error).message}`));
+      process.exit(1);
+    }
+
+    if (!quiet) {
+      console.log();
+      console.log(style.bold(`  Workflow: ${definition.name}`));
+      if (definition.description) {
+        console.log(style.dim(`  ${definition.description}`));
+      }
+      console.log(style.dim(`  Steps: ${definition.steps.length}`));
+      console.log(style.dim(`  Budget: ¥${budget.toFixed(2)}`));
+      console.log();
+    }
+
+    // Build deps
+    const deps = this.buildAgentLoopDeps(workspaceDir, budget, quiet);
+
+    // Create engine
+    const stateStore = new WorkflowStateStore(stateDir);
+    await stateStore.init();
+
+    const engine = new WorkflowEngine({
+      agentLoopDeps: deps,
+      stateStore,
+      onCheckpoint: async (stepId, message) => {
+        console.log();
+        console.log(style.warning(`  Checkpoint [${stepId}]: ${message}`));
+
+        const readline = await import("node:readline");
+        const rl = readline.createInterface({
+          input: process.stdin,
+          output: process.stdout,
+        });
+
+        const answer = await new Promise<string>((resolve) => {
+          rl.question(style.bold("  Approve? [Y/n]: "), (ans) => {
+            rl.close();
+            resolve(ans.trim().toLowerCase());
+          });
+        });
+
+        return answer !== "n" && answer !== "no";
+      },
+      onStepComplete: quiet
+        ? undefined
+        : (stepId, status, result) => {
+            const icon =
+              status === "completed"
+                ? style.success("✓")
+                : status === "failed"
+                  ? style.error("✗")
+                  : status === "skipped"
+                    ? style.dim("⊘")
+                    : style.warning("⏸");
+            const cost = result?.cost ? ` ¥${result.cost.toFixed(4)}` : "";
+            const steps = result?.steps ? ` ${result.steps} steps` : "";
+            console.log(`  ${icon} ${stepId}: ${status}${steps}${cost}`);
+          },
+      onWorkflowStatusChange: quiet
+        ? undefined
+        : (status, run) => {
+            if (status === "paused") {
+              console.log(style.warning(`  Workflow paused (run: ${run.id})`));
+              console.log(style.dim(`  Resume with: agent-orch workflow resume ${run.id}`));
+            }
+          },
+    });
+
+    const run = await engine.run(definition, budget, options.variables);
+
+    // Final output
+    console.log();
+    const statusIcon =
+      run.status === "completed"
+        ? style.success("✓")
+        : run.status === "paused"
+          ? style.warning("⏸")
+          : style.error("✗");
+    console.log(`${statusIcon} Workflow ${run.status}`);
+    console.log(style.dim(`  Run ID: ${run.id}`));
+    console.log(style.dim(`  Total cost: ¥${run.totalCost.toFixed(4)}`));
+
+    if (run.completedAt) {
+      const duration = ((run.completedAt - run.startedAt) / 1000).toFixed(1);
+      console.log(style.dim(`  Duration: ${duration}s`));
+    }
+
+    // Print step summary
+    console.log();
+    console.log(style.bold("  Steps:"));
+    for (const step of run.steps) {
+      const icon =
+        step.status === "completed"
+          ? style.success("✓")
+          : step.status === "failed"
+            ? style.error("✗")
+            : step.status === "skipped"
+              ? style.dim("⊘")
+              : step.status === "waiting_approval"
+                ? style.warning("⏸")
+                : style.dim("○");
+      const cost = step.result?.cost ? ` ¥${step.result.cost.toFixed(4)}` : "";
+      console.log(`    ${icon} ${step.stepId}: ${step.status}${cost}`);
+    }
+
+    // If paused, print resume hint
+    if (run.status === "paused") {
+      console.log();
+      console.log(style.dim(`  Resume: agent-orch workflow resume ${run.id} -c ${this.configPath}`));
+    }
+  }
+
+  async listWorkflows(): Promise<void> {
+    const workspaceDir = path.dirname(path.resolve(this.configPath));
+    const wfConfig = this.config.workflows;
+    const workflowsDir = path.join(workspaceDir, wfConfig?.dir ?? ".workflows");
+
+    let entries: string[];
+    try {
+      entries = await fs.promises.readdir(workflowsDir);
+    } catch {
+      console.log(style.dim("  No workflows directory found."));
+      return;
+    }
+
+    const yamlFiles = entries.filter((e) => e.endsWith(".yaml") || e.endsWith(".yml"));
+
+    if (yamlFiles.length === 0) {
+      console.log(style.dim("  No workflow files found."));
+      return;
+    }
+
+    console.log(style.bold("  Available workflows:"));
+    console.log();
+
+    for (const file of yamlFiles) {
+      const filePath = path.join(workflowsDir, file);
+      try {
+        const def = await loadWorkflow(filePath);
+        console.log(`  ${style.bold(def.name)} ${style.dim(`(${file})`)}`);
+        if (def.description) {
+          console.log(`    ${style.dim(def.description)}`);
+        }
+        console.log(`    ${style.dim(`${def.steps.length} steps`)}`);
+      } catch {
+        console.log(`  ${style.error(file)} ${style.dim("(invalid)")}`);
+      }
+    }
+
+    // Also show recent runs
+    const stateDir = path.join(workspaceDir, wfConfig?.stateDir ?? ".workflow-state");
+    const stateStore = new WorkflowStateStore(stateDir);
+    const runs = await stateStore.listRuns();
+
+    if (runs.length > 0) {
+      console.log();
+      console.log(style.bold("  Recent runs:"));
+      for (const run of runs.slice(0, 10)) {
+        const icon =
+          run.status === "completed"
+            ? style.success("✓")
+            : run.status === "paused"
+              ? style.warning("⏸")
+              : run.status === "running"
+                ? style.dim("●")
+                : style.error("✗");
+        const time = new Date(run.startedAt).toLocaleString();
+        console.log(`    ${icon} ${run.id} ${style.dim(`${run.workflowName} · ${time} · ¥${run.totalCost.toFixed(4)}`)}`);
+      }
+    }
+  }
+
+  async workflowStatus(runId: string): Promise<void> {
+    const workspaceDir = path.dirname(path.resolve(this.configPath));
+    const wfConfig = this.config.workflows;
+    const stateDir = path.join(workspaceDir, wfConfig?.stateDir ?? ".workflow-state");
+    const stateStore = new WorkflowStateStore(stateDir);
+
+    const run = await stateStore.load(runId);
+    if (!run) {
+      console.error(style.error(`  Workflow run "${runId}" not found`));
+      process.exit(1);
+    }
+
+    const icon =
+      run.status === "completed"
+        ? style.success("✓")
+        : run.status === "paused"
+          ? style.warning("⏸")
+          : run.status === "running"
+            ? style.dim("●")
+            : style.error("✗");
+
+    console.log();
+    console.log(`${icon} ${style.bold(run.workflowName)} ${style.dim(`(${run.id})`)}`);
+    console.log(style.dim(`  Status: ${run.status}`));
+    console.log(style.dim(`  Total cost: ¥${run.totalCost.toFixed(4)}`));
+    console.log(style.dim(`  Started: ${new Date(run.startedAt).toLocaleString()}`));
+    if (run.completedAt) {
+      const duration = ((run.completedAt - run.startedAt) / 1000).toFixed(1);
+      console.log(style.dim(`  Duration: ${duration}s`));
+    }
+
+    console.log();
+    console.log(style.bold("  Steps:"));
+    for (const step of run.steps) {
+      const stepIcon =
+        step.status === "completed"
+          ? style.success("✓")
+          : step.status === "failed"
+            ? style.error("✗")
+            : step.status === "skipped"
+              ? style.dim("⊘")
+              : step.status === "waiting_approval"
+                ? style.warning("⏸")
+                : style.dim("○");
+      const cost = step.result?.cost ? ` ¥${step.result.cost.toFixed(4)}` : "";
+      const content = step.result?.content
+        ? ` ${style.dim(step.result.content.slice(0, 80) + (step.result.content.length > 80 ? "..." : ""))}`
+        : "";
+      console.log(`    ${stepIcon} ${step.stepId}: ${step.status}${cost}${content}`);
+    }
+
+    if (run.status === "paused") {
+      console.log();
+      console.log(style.dim(`  Resume: agent-orch workflow resume ${run.id}`));
+    }
+  }
+
+  async resumeWorkflow(
+    runId: string,
+    filePath: string,
+    options: { budget?: number; quiet?: boolean }
+  ): Promise<void> {
+    const quiet = options.quiet ?? false;
+    const budget = options.budget ?? this.config.budget.maxYuan;
+    const workspaceDir = path.dirname(path.resolve(this.configPath));
+    const wfConfig = this.config.workflows;
+    const stateDir = path.join(workspaceDir, wfConfig?.stateDir ?? ".workflow-state");
+
+    // Load workflow definition
+    let definition: WorkflowDefinition;
+    try {
+      definition = await loadWorkflow(filePath);
+    } catch (err) {
+      console.error(style.error(`  Failed to load workflow: ${(err as Error).message}`));
+      process.exit(1);
+    }
+
+    // Build deps
+    const deps = this.buildAgentLoopDeps(workspaceDir, budget, quiet);
+
+    // Create engine
+    const stateStore = new WorkflowStateStore(stateDir);
+    await stateStore.init();
+
+    const engine = new WorkflowEngine({
+      agentLoopDeps: deps,
+      stateStore,
+      onCheckpoint: async (stepId, message) => {
+        console.log();
+        console.log(style.warning(`  Checkpoint [${stepId}]: ${message}`));
+
+        const readline = await import("node:readline");
+        const rl = readline.createInterface({
+          input: process.stdin,
+          output: process.stdout,
+        });
+
+        const answer = await new Promise<string>((resolve) => {
+          rl.question(style.bold("  Approve? [Y/n]: "), (ans) => {
+            rl.close();
+            resolve(ans.trim().toLowerCase());
+          });
+        });
+
+        return answer !== "n" && answer !== "no";
+      },
+      onStepComplete: quiet
+        ? undefined
+        : (stepId, status, result) => {
+            const stepIcon =
+              status === "completed"
+                ? style.success("✓")
+                : status === "failed"
+                  ? style.error("✗")
+                  : status === "skipped"
+                    ? style.dim("⊘")
+                    : style.warning("⏸");
+            const cost = result?.cost ? ` ¥${result.cost.toFixed(4)}` : "";
+            console.log(`  ${stepIcon} ${stepId}: ${status}${cost}`);
+          },
+      onWorkflowStatusChange: quiet
+        ? undefined
+        : (status, run) => {
+            if (status === "paused") {
+              console.log(style.warning(`  Workflow paused (run: ${run.id})`));
+            }
+          },
+    });
+
+    const run = await engine.resumeWithDefinition(runId, definition, budget);
+
+    // Final output
+    console.log();
+    const statusIcon =
+      run.status === "completed"
+        ? style.success("✓")
+        : run.status === "paused"
+          ? style.warning("⏸")
+          : style.error("✗");
+    console.log(`${statusIcon} Workflow ${run.status}`);
+    console.log(style.dim(`  Total cost: ¥${run.totalCost.toFixed(4)}`));
+
+    if (run.status === "paused") {
+      console.log(style.dim(`  Resume: agent-orch workflow resume ${run.id} -c ${this.configPath}`));
+    }
+  }
+
+  private buildAgentLoopDeps(workspaceDir: string, budget: number, quiet: boolean) {
+    const nativeSearch = Object.values(this.config.providers).some(
+      (p) => p.nativeSearch === true
+    );
+
+    return {
+      adapterSelector: new AdapterSelector(),
+      permissionResolver: new PermissionResolver(this.config.security.requireApproval),
+      costTracker: new CostTracker(budget),
+      concurrencyLimiter: new ConcurrencyLimiter(this.config.security.maxConcurrentAgents),
+      adapters: this.adapters,
+      fallbackExecutor: this.fallbackExecutor,
+      agentTypes: Array.from(this.agentDefinitions.keys()),
+      mailbox: this.mailbox,
+      nativeSearch,
+      loadAgentDefinition: (type: string) => {
+        const def = this.agentDefinitions.get(type);
+        if (!def) throw new Error(`Agent "${type}" not found`);
+        return def;
+      },
+      onApprovalRequest: async (req: {
+        agentType: string;
+        toolName: string;
+        arguments: Record<string, unknown>;
+      }) => {
+        this.logger.info("agent.approval.auto", {
+          tool: req.toolName,
+          agentType: req.agentType,
+        });
+        return true;
+      },
+      workspaceDir,
+      onStreamText: quiet
+        ? undefined
+        : (text: string) => {
+            process.stdout.write(text);
+          },
+    };
+  }
 }
 
 // ── CLI ──
@@ -1011,6 +1395,83 @@ program
   .option("--dashboard", "Include ink + react dependencies for TUI dashboard mode")
   .action(async (options: { dashboard?: boolean }) => {
     await initProject({ dashboard: options.dashboard });
+  });
+
+// ── Workflow commands ──
+
+const workflowCmd = program
+  .command("workflow")
+  .description("Manage and execute workflows");
+
+workflowCmd
+  .command("run")
+  .description("Execute a workflow from a YAML file")
+  .argument("<file>", "Workflow YAML file path")
+  .option("-c, --config <path>", "Config file path", "orchestrator.yaml")
+  .option("-b, --budget <yuan>", "Budget limit in yuan (RMB)", parseFloat)
+  .option("-q, --quiet", "Suppress real-time output")
+  .option("--var <pairs...>", "Override workflow variables (key=value)")
+  .action(async (file: string, options: { config: string; budget?: number; quiet?: boolean; var?: string[] }) => {
+    const agentsDir = path.join(path.dirname(options.config), ".agents");
+    const orchestrator = new Orchestrator(options.config, agentsDir);
+    await orchestrator.init();
+
+    const variables: Record<string, string> = {};
+    if (options.var) {
+      for (const pair of options.var) {
+        const eqIndex = pair.indexOf("=");
+        if (eqIndex > 0) {
+          variables[pair.slice(0, eqIndex)] = pair.slice(eqIndex + 1);
+        }
+      }
+    }
+
+    await orchestrator.runWorkflow(file, {
+      budget: options.budget,
+      quiet: options.quiet,
+      variables,
+    });
+  });
+
+workflowCmd
+  .command("list")
+  .description("List available workflows and recent runs")
+  .option("-c, --config <path>", "Config file path", "orchestrator.yaml")
+  .action(async (options: { config: string }) => {
+    const agentsDir = path.join(path.dirname(options.config), ".agents");
+    const orchestrator = new Orchestrator(options.config, agentsDir);
+    await orchestrator.init();
+    await orchestrator.listWorkflows();
+  });
+
+workflowCmd
+  .command("status")
+  .description("Show status of a workflow run")
+  .argument("<id>", "Workflow run ID")
+  .option("-c, --config <path>", "Config file path", "orchestrator.yaml")
+  .action(async (id: string, options: { config: string }) => {
+    const agentsDir = path.join(path.dirname(options.config), ".agents");
+    const orchestrator = new Orchestrator(options.config, agentsDir);
+    await orchestrator.init();
+    await orchestrator.workflowStatus(id);
+  });
+
+workflowCmd
+  .command("resume")
+  .description("Resume a paused workflow run")
+  .argument("<id>", "Workflow run ID")
+  .argument("<file>", "Workflow YAML file path")
+  .option("-c, --config <path>", "Config file path", "orchestrator.yaml")
+  .option("-b, --budget <yuan>", "Budget limit in yuan (RMB)", parseFloat)
+  .option("-q, --quiet", "Suppress real-time output")
+  .action(async (id: string, file: string, options: { config: string; budget?: number; quiet?: boolean }) => {
+    const agentsDir = path.join(path.dirname(options.config), ".agents");
+    const orchestrator = new Orchestrator(options.config, agentsDir);
+    await orchestrator.init();
+    await orchestrator.resumeWorkflow(id, file, {
+      budget: options.budget,
+      quiet: options.quiet,
+    });
   });
 
 // Default action: "agent-orch" or "agent-orch <task>" (no subcommand) — Claude-like UX

@@ -1,0 +1,34 @@
+name: feature-implementation
+description: Plan → Implement → Test — feature development workflow
+version: "1.0"
+variables:
+  feature: "user authentication"
+  module: "src/auth"
+
+steps:
+  - id: plan
+    type: agent
+    agentType: architect
+    task: "Design the ${feature} feature for module ${module}. Provide architecture and implementation plan."
+
+  - id: implement
+    type: agent
+    agentType: coder
+    task: "Implement ${feature} based on this plan: ${steps.plan.content}"
+    maxSteps: 40
+    budget: 8.0
+
+  - id: test
+    type: committee
+    agentTypes:
+      - explore
+      - reviewer
+    task: "Review and verify the ${feature} implementation: ${steps.implement.content}"
+    strategy: concat
+
+  - id: checkpoint
+    type: checkpoint
+    task: "Review completed. All checks passed."
+    checkpoint:
+      message: "Feature implementation review complete. Approve to finalize?"
+      autoApprove: true

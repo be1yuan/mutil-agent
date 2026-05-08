@@ -54,6 +54,15 @@ export interface ApiConfig {
   cors: boolean;
 }
 
+export interface WorkflowsConfig {
+  /** Directory for workflow YAML files (default: ".workflows") */
+  dir: string;
+  /** Directory for persisted run state (default: ".workflow-state") */
+  stateDir: string;
+  /** Default per-step timeout in ms (default: 600000 = 10min) */
+  defaultTimeout: number;
+}
+
 export interface OrchestratorConfig {
   providers: Record<ModelProvider, ProviderConfig>;
   fallback: FallbackConfig;
@@ -62,6 +71,7 @@ export interface OrchestratorConfig {
   observability: ObservabilityConfig;
   mailbox?: MailboxConfig;
   api?: ApiConfig;
+  workflows?: WorkflowsConfig;
 }
 
 /** Default config values */
@@ -93,5 +103,10 @@ export const DEFAULT_CONFIG: Partial<OrchestratorConfig> = {
     host: "127.0.0.1",
     port: 3100,
     cors: true,
+  },
+  workflows: {
+    dir: ".workflows",
+    stateDir: ".workflow-state",
+    defaultTimeout: 600_000,
   },
 };

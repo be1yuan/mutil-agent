@@ -51,6 +51,12 @@ const ApiConfigSchema = z.object({
   cors: z.boolean().default(true),
 });
 
+const WorkflowsConfigSchema = z.object({
+  dir: z.string().default(".workflows"),
+  stateDir: z.string().default(".workflow-state"),
+  defaultTimeout: z.number().int().min(1000).default(600_000),
+});
+
 const ConfigSchema = z.object({
   providers: z.record(z.enum(["deepseek", "zhipu", "mimo"]), ProviderConfigSchema).refine(
     (p) => Object.keys(p).length >= 1,
@@ -62,6 +68,7 @@ const ConfigSchema = z.object({
   observability: ObservabilityConfigSchema.default({}),
   mailbox: MailboxConfigSchema.default({}).optional(),
   api: ApiConfigSchema.default({}).optional(),
+  workflows: WorkflowsConfigSchema.default({}).optional(),
 });
 
 // ── Validation ──

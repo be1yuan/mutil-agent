@@ -1,0 +1,38 @@
+name: code-review-pipeline
+description: Explore → Implement → Review — a full code workflow
+version: "1.0"
+variables:
+  targetDir: "src/agent"
+
+steps:
+  - id: explore
+    type: agent
+    agentType: explore
+    task: "Analyze the code structure in ${targetDir}, find all public APIs and call relationships"
+
+  - id: implement
+    type: agent
+    agentType: coder
+    task: "Based on the analysis: ${steps.explore.content}, implement the refactoring"
+    maxSteps: 30
+    budget: 5.0
+    on:
+      condition:
+        field: status
+        operator: eq
+        value: completed
+      then: review
+      else: fix_errors
+
+  - id: review
+    type: agent
+    agentType: reviewer
+    task: "Review the code changes: ${steps.implement.content}"
+    checkpoint:
+      message: "Review complete. Continue with the next step?"
+      autoApprove: false
+
+  - id: fix_errors
+    type: agent
+    agentType: coder
+    task: "Fix the issues found in the previous implementation. Reviewer feedback: ${steps.review.content}"

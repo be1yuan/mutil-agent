@@ -1,18 +1,45 @@
 # Multi-Agent Orchestrator
 
-轻量级自编排多 Agent CLI，基于 DeepSeek V4-Pro、GLM-5.1 和 MiMo-V2.5-Pro，通过 Anthropic 兼容端点统一接入。
+轻量级自编排多 Agent CLI，基于 DeepSeek V4-Pro、GLM-4.7 和 MiMo-V2.5-Pro，通过 Anthropic 兼容端点统一接入。支持单 Agent 直接执行、AI 自编排委派、多 Agent 委员会并行、以及可编排的工作流引擎。
 
 ## 架构
 
-每个 Agent 运行**内嵌编排循环** — 不需要独立的协调器服务。Agent 在循环中自行判断任务复杂度，复杂任务通过 `task` 原语拆分子 Agent：
+每个 Agent 运行内嵌编排循环 -- 不需要独立的协调器服务。Agent 在循环中自行判断任务复杂度，复杂任务通过 `task` 原语拆分子 Agent：
 
 ```
-用户 → 主 Agent → (简单任务) → 直接回答
-                → (复杂任务) → 派生 explore → coder → reviewer
-                              → 汇总结果
+用户 -> 主 Agent -> (简单任务) -> 直接回答
+                  -> (复杂任务) -> 派生 explore -> coder -> reviewer
+                                -> 汇总结果
 ```
 
 核心设计决策：废弃独立 Orchestrator 层。编排本质是决策，决策应内嵌在执行主体的循环中，而非外包给上层模块。详见 [DESIGN-v6.md](DESIGN-v6.md)。
+
+## 执行模式
+
+| 模式 | 说明 | CLI |
+|------|------|-----|
+| **Single** | main 直接执行，禁用 task 工具，不派生子 Agent | `-m single` |
+| **Auto** (默认) | main 带 task 工具，AI 自行决定是否委派子 Agent | `-m auto` 或不指定 |
+| **Committee** | explore + coder + reviewer + architect 并行执行 | `-m committee` |
+
+也支持交互式选择：
+
+```bash
+agent-orch run "修复登录功能" -i
+```
+
+选择菜单：
+
+```
+  1. Single Agent
+     Main agent executes directly -- fast, no sub-agent delegation
+
+  2. Self-Orchestration (default)
+     Main agent decides whether to delegate via task tool
+
+  3. Multi-Agent Committee
+     explore + coder + reviewer + architect work in parallel
+```
 
 ## 快速开始
 
@@ -30,6 +57,10 @@ cp .env.example .env
 
 # 执行任务
 agent-orch run "修复 auth.ts 中的登录 bug"
+
+# 更多示例
+agent-orch run "分析代码库安全性" --mode committee
+agent-orch run "重构用户模块" -i
 ```
 
 ### 本地开发
@@ -57,40 +88,86 @@ npm run dev validate
 
 | 命令 | 说明 |
 |------|------|
-| `init` | 在当前目录初始化新项目（`--dashboard` 启用 TUI 仪表盘依赖）|
-| `run <task>` | 执行任务（`--agent`, `--budget`, `--verbose`, `--quiet`, `--dashboard`）|
+| `run <task>` | 执行任务（`--mode`, `--agent`, `--budget`, `--dashboard`, `--interactive`）|
+| `committee <task>` | 多 Agent 并行执行（`--agents`, `--strategy`, `--budget`）|
+| `memory list` | 列出所有长期记忆条目 |
+| `memory search <query>` | 搜索记忆（`--tags` 按标签过滤）|
+| `memory clear` | 清空所有长期记忆 |
+| `workflow run <file>` | 执行工作流（YAML 定义的多步骤流程）|
+| `workflow list` | 列出可用工作流和最近运行 |
+| `workflow status <id>` | 查看工作流运行状态 |
+| `workflow resume <id> <file>` | 恢复暂停的工作流 |
+| `init` | 在当前目录初始化新项目 |
 | `list-agents` | 列出可用 Agent |
 | `validate` | 验证配置和 Agent 定义 |
-| `committee <task>` | 多 Agent 并行执行（`--agents`, `--strategy`, `--budget`）|
 | `serve` | 启动 HTTP API 服务器（`--host`, `--port`）|
 
 ### CLI 选项
 
 | 选项 | 说明 |
 |------|------|
+| `-m, --mode <mode>` | 执行模式：`single`, `auto`, `committee`（默认 `auto`）|
+| `-i, --interactive` | 交互式选择执行模式 |
 | `-a, --agent <type>` | 指定 Agent 类型（默认 `main`）|
 | `-b, --budget <yuan>` | 预算上限，单位人民币元 |
 | `-v, --verbose` | 显示完整工具参数和返回值 |
 | `-q, --quiet` | 仅显示最终结果，抑制实时输出 |
+| `-d, --dashboard` | 启用交互式终端仪表盘 |
 | `-c, --config <path>` | 配置文件路径（默认 `orchestrator.yaml`）|
 
-### Committee 模式
+### 交互式会话
 
-多 Agent 并行执行同一任务，支持三种聚合策略：
+不加子命令直接运行 `agent-orch` 进入 Claude Code 风格的交互式 REPL：
 
 ```bash
-# 默认三 Agent 并行，concat 聚合
-npm run dev committee "分析代码库安全性"
+$ agent-orch
 
-# 指定 Agent 和策略
-npm run dev committee "审查 PR" --agents "reviewer,architect" --strategy majority
+  欢迎使用 agent-orch
+  Type your task below and press Enter.
+  /model to switch model  /exit to quit  /help for commands
+
+  > 帮我分析这个项目的架构
 ```
 
-| 策略 | 说明 |
-|------|------|
-| `concat` | 拼接所有 Agent 输出 |
-| `majority` | 多数投票（需要至少 3 个 Agent）|
-| `best` | 选择成本最低的完整结果 |
+任务执行后，可在 `/save` `/model` `/exit` 菜单中继续对话或保存结果。
+
+## TUI 仪表盘
+
+通过 `--dashboard` 标志启用全屏终端仪表盘，实时展示 Agent 执行状态：
+
+```bash
+agent-orch run "重构用户模块" --dashboard
+```
+
+仪表盘四区域布局：
+
+```
++-- Agent Status -----------------+- Cost -------------------------------+
+| > coder          [running] s3  | Spent: 0.0312 / 35.00                |
+|   +> explore     [done]    8   | [########........................] 6% |
+|   +> architect   [running] s2  | Provider: deepseek-v4-pro             |
++---------------------------------+--------------------------------------+
+| Output                                                               |
+|   + Step 1: 读取项目结构...                                           |
+|   + Step 2: 发现 3 个需要重构的模块                                    |
+|   + Step 3: 正在编码...                                               |
+|                                                                      |
++----------------------------------------------------------------------+
+| [A]pprove / [D]eny 或任务后操作菜单                                    |
++----------------------------------------------------------------------+
+```
+
+任务完成后支持：
+- **继续聊天** -- 在仪表盘内输入后续消息，继续对话
+- **保存结果** -- 写入时间戳命名的文件
+- **退出** -- 退出仪表盘
+
+### 可选依赖
+
+```bash
+npm install ink react ink-text-input
+# 仪表盘需要这些包，init --dashboard 会自动配置
+```
 
 ## Agent 定义
 
@@ -118,10 +195,10 @@ tools:
 | Agent | 模型 | 角色 | 关键限制 |
 |-------|------|------|---------|
 | `main` | DeepSeek V4-Pro | 通用任务 + 委派子任务 | 完整权限，可派生子 Agent |
-| `explore` | DeepSeek V4-Pro | 只读代码库分析 | 仅 Read/Grep/Glob，不可写入 |
-| `coder` | DeepSeek V4-Pro | 代码编写与修改 | 可写入/编辑，不可委派 |
+| `explore` | DeepSeek V4-Flash | 只读代码库分析 | 仅 Read/Grep/Glob，不可写入 |
+| `coder` | GLM-4.7 (zhipu) | 代码编写与修改 | 可写入/编辑，不可委派 |
 | `reviewer` | DeepSeek V4-Pro | 代码审查与质量分析 | 只读 + git 检查 |
-| `architect` | MiMo-V2.5-Pro | 只读架构顾问 | 只读分析，不写代码，不可委派 |
+| `architect` | MiMo-V2.5-Pro (mimo) | 只读架构顾问 | 只读分析，不写代码，不可委派 |
 
 ## 内置工具
 
@@ -133,18 +210,19 @@ tools:
 | `Bash` | 安全执行命令（spawn 数组，非 shell:true）|
 | `Grep` | 正则搜索文件内容 |
 | `Glob` | 文件模式匹配 |
-| `WebSearch` | DuckDuckGo 搜索（带缓存 + 限速）|
+| `WebSearch` | DuckDuckGo 搜索（带缓存 + 限速）或 Provider-native 搜索 |
 | `WebFetch` | URL 抓取（DNS rebinding 防护 + 缓存）|
 | `MailboxSend` | 发送邮箱消息（跨进程通信）|
 | `MailboxReceive` | 接收邮箱消息（支持阻塞等待）|
+| `task` | 派生 Agent 执行子任务（auto 模式）|
 
 ## 工具权限
 
 三级权限模型：
 
-- **`allow`** — 直接执行
-- **`ask`** — 请求用户确认后执行
-- **`deny`** — 阻止执行
+- **`allow`** -- 直接执行
+- **`ask`** -- 请求用户确认后执行（Dashboard 模式下 A/D 键审批）
+- **`deny`** -- 阻止执行
 
 Bash 工具支持 **glob 模式** 做命令级细粒度控制：
 
@@ -156,6 +234,61 @@ Bash:
 ```
 
 权限优先级：全局 `requireApproval` 是最低安全基线，Agent 配置只能比它更严格（deny > ask > allow）。
+
+## 工作流引擎
+
+通过 YAML 文件定义多步骤工作流，支持条件分支和人工审批检查点。
+
+### 示例
+
+```yaml
+name: code-review-pipeline
+description: 代码审查完整流程
+steps:
+  - id: explore
+    type: agent
+    agentType: explore
+    task: "分析 src/ 的代码结构"
+
+  - id: review
+    type: agent
+    agentType: reviewer
+    task: "审查代码变更"
+    checkpoint:
+      message: "审查完成，是否继续?"
+      autoApprove: false
+
+  - id: fix
+    type: agent
+    agentType: coder
+    task: "修复审查发现的问题"
+```
+
+### 特性
+
+- **顺序执行** -- 步骤按定义顺序依次执行
+- **条件分支** -- 基于状态/内容/成本进行条件路由
+- **委员会步骤** -- 支持步骤内多 Agent 并行
+- **检查点** -- 人工审批检查点，可暂停/恢复
+- **变量插值** -- `${var}` 和 `${steps.id.content}` 模板变量
+- **状态持久化** -- 运行时状态写入 `.workflow-state/`，进程重启可恢复
+- **预算控制** -- 单步骤独立预算上限
+
+### CLI 命令
+
+```bash
+# 执行工作流
+agent-orch workflow run .workflows/code-review.yaml
+
+# 列出工作流
+agent-orch workflow list
+
+# 查看运行状态
+agent-orch workflow status run_abc123
+
+# 恢复暂停的工作流
+agent-orch workflow resume run_abc123 .workflows/code-review.yaml
+```
 
 ## 文件邮箱
 
@@ -173,14 +306,85 @@ mailbox:
 存储布局：
 ```
 .mailbox/
-├── {agentType}/inbox/          # 未读消息
-├── {agentType}/inbox/.read/    # 已读消息
-├── {agentType}/.bc_read/       # 广播已读标记
-├── _broadcast/inbox/           # 广播消息（to="*"）
-└── _dead_letter/               # 无效投递
++-- {agentType}/inbox/          # 未读消息
++-- {agentType}/inbox/.read/    # 已读消息
++-- {agentType}/.bc_read/       # 广播已读标记
++-- _broadcast/inbox/           # 广播消息（to="*"）
++-- _dead_letter/               # 无效投递
 ```
 
-特性：原子写入（temp → rename）、Windows 兼容广播、per-agent 已读跟踪、waitFor 阻塞等待新消息。
+特性：原子写入（temp -> rename）、Windows 兼容广播、per-agent 已读跟踪、waitFor 阻塞等待新消息。
+
+## Agent 记忆系统
+
+三层记忆架构，让 Agent 具备跨任务学习能力。
+
+```
+.memory/
+├── knowledge/       # 长期记忆（JSON 文件，per-entry）
+├── context/         # 项目上下文（Markdown 文档）
+├── sessions/        # 会话摘要（per-session 目录）
+└── index.json       # 标签 → 条目 ID 索引
+```
+
+### 记忆类型
+
+| 类型 | 存储位置 | 说明 |
+|------|----------|------|
+| **短期记忆** | `sessions/{id}/entries/` | 当前会话记忆条目，随会话结束过期 |
+| **长期记忆** | `knowledge/{id}.json` | 持久化知识，跨会话保留，标签索引搜索 |
+| **项目上下文** | `context/{key}.md` | 架构约定、编码标准等 Markdown 文档 |
+| **统一检索** | Retriever | 跨长期记忆 + 项目上下文统一搜索，相关性排序 |
+
+### Agent 工具
+
+| 工具 | 说明 |
+|------|------|
+| `MemoryRead` | 搜索记忆（query + tags + type + limit）|
+| `MemoryWrite` | 写入记忆（type: fact/decision/preference/context）|
+| `MemorySearch` | 搜索记忆（query + tags）|
+
+### 特性
+
+- **标签索引**：长期记忆按标签建立索引，支持快速检索
+- **相关性排序**：精确匹配（3分）+ 标签匹配（2分）+ 时间衰减（1天半衰期）
+- **自动摘要**：会话 token 数超阈值时自动生成对话摘要
+- **容量控制**：`shortTermMaxEntries` / `longTermMaxEntries` 限制条目数，超限淘汰最旧条目
+- **原子写入**：temp → rename 模式，无部分写入风险
+- **路径安全**：记忆 key/ID 输入校验，拒绝 `..` `/` `\` 路径穿越
+
+### 配置
+
+```yaml
+memory:
+  enabled: true              # 启用记忆系统
+  dir: .memory               # 存储目录（支持绝对路径）
+  shortTermMaxEntries: 50    # 每会话最多条目数
+  longTermMaxEntries: 500    # 长期记忆最多条目数
+  summarizationThreshold: 8000  # 自动摘要 token 阈值
+  autoSummarize: true        # 是否自动生成对话摘要
+```
+
+### CLI 命令
+
+```bash
+# 列出所有长期记忆
+agent-orch memory list
+
+# 搜索记忆
+agent-orch memory search "架构约定" --tags coding,standard
+
+# 清空长期记忆
+agent-orch memory clear
+```
+
+### API 端点
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `GET` | `/api/memory` | 列出所有长期记忆 |
+| `GET` | `/api/memory/search?q=&tags=` | 搜索记忆 |
+| `DELETE` | `/api/memory` | 清空长期记忆 |
 
 ## HTTP API
 
@@ -200,6 +404,7 @@ npm run dev serve --port 3100
 | `GET` | `/api/agents` | 列出可用 Agent |
 | `GET` | `/api/health` | 健康检查 |
 | `GET` | `/api/cost` | 成本追踪 |
+| `GET` | `/api/metrics` | Prometheus 指标 |
 
 ### 认证与安全
 
@@ -218,7 +423,7 @@ FallbackExecutor 提供三重保障：
 
 1. 主模型重试（最多 3 次，指数退避）
 2. 429/5xx/超时自动重试
-3. 跨模型故障转移（DeepSeek → GLM → MiMo）
+3. 跨模型故障转移（DeepSeek -> GLM -> MiMo）
 
 ## 成本控制
 
@@ -232,11 +437,12 @@ FallbackExecutor 提供三重保障：
 
 ## 模型定价
 
-| Provider | 模型 | 输入 (¥/1M tokens) | 输出 (¥/1M tokens) | 缓存命中 |
+| Provider | 模型 | 输入 (元/1M tokens) | 输出 (元/1M tokens) | 缓存命中 |
 |----------|------|---------------------|---------------------|----------|
-| deepseek | DeepSeek V4-Pro | ¥2.87 | ¥5.74 | — |
-| zhipu | GLM-5.1 | ¥7.0 | ¥22.4 | — |
-| mimo | MiMo-V2.5-Pro | ¥7.0 | ¥21.0 | ¥1.4 |
+| deepseek | DeepSeek V4-Pro | 2.87 | 5.74 | -- |
+| deepseek | DeepSeek V4-Flash | -- | -- | -- |
+| zhipu | GLM-4.7 | 7.0 | 22.4 | -- |
+| mimo | MiMo-V2.5-Pro | 7.0 | 21.0 | 1.4 |
 
 ## 配置
 
@@ -247,19 +453,21 @@ providers:
   deepseek:
     apiKey: ${DEEPSEEK_API_KEY}
     baseURL: https://api.deepseek.com/anthropic
+    nativeSearch: true
   zhipu:
     apiKey: ${ZHIPU_API_KEY}
     baseURL: https://open.bigmodel.cn/api/anthropic
   mimo:
     apiKey: ${MIMO_API_KEY}
     baseURL: https://api.xiaomimimo.com/anthropic
+    nativeSearch: true
 
 fallback:
   maxRetries: 3
   retryDelayMs: 1000
   fallbackModel:
     provider: zhipu
-    model: glm-5.1
+    model: glm-4.7
 
 budget:
   maxYuan: 35.0
@@ -267,6 +475,11 @@ budget:
 security:
   maxConcurrentAgents: 5
   requireApproval: ["file.delete", "git.push"]
+
+workflows:
+  dir: .workflows
+  stateDir: .workflow-state
+  defaultTimeout: 600000
 
 mailbox:
   enabled: true
@@ -283,21 +496,27 @@ api:
 
 ```
 src/
-├── agent/            Agent 执行循环、工具定义、并发控制、邮箱、worktree
-├── adapters/         模型适配器（DeepSeek, GLM, MiMo）+ 故障转移执行器
-├── api/              HTTP API 服务器、SSE、任务管理器
-├── security/         权限解析、安全执行、路径遍历防护
-├── config/           YAML/Markdown 加载器、Zod 校验
-├── observability/    结构化日志、预算追踪
-├── types/            核心共享类型
-└── cli/              CLI 入口、ANSI 颜色、状态渲染器
++-- agent/            Agent 执行循环、工具定义、Committee、并发控制、邮箱、worktree
++-- adapters/         模型适配器（DeepSeek, GLM, MiMo）+ 故障转移执行器
++-- api/              HTTP API 服务器、SSE、任务管理器
++-- workflow/         工作流引擎（parser, engine, state-store, template-resolver）
++-- memory/           记忆系统（short-term, long-term, project-context, retriever）
++-- security/         权限解析、安全执行、路径遍历防护
++-- config/           YAML/Markdown 加载器、Zod 校验
++-- observability/    结构化日志、预算追踪、Prometheus 指标
++-- types/            核心共享类型
++-- cli/              CLI 入口、Dashboard TUI、ANSI 颜色、状态渲染器
 .agents/              Agent 定义文件（Markdown + frontmatter）
+.workflows/           工作流定义文件（YAML）
 orchestrator.yaml     全局配置
 ```
 
 ## 可选依赖
 
 ```bash
+# TUI 仪表盘（ink React 终端框架）
+npm install ink react ink-text-input
+
 # 更好的 WebFetch HTML 提取
 npm install cheerio
 ```
@@ -311,12 +530,41 @@ docker run \
   -e DEEPSEEK_API_KEY=sk-... \
   -v $(pwd):/workspace \
   -w /workspace \
-  agent-orch run "fix the auth bug"
+  agent-orch run "修复 auth 模块"
+
+# 启动 API 服务
+docker run \
+  -e DEEPSEEK_API_KEY=sk-... \
+  -p 3100:3100 \
+  agent-orch serve --host 0.0.0.0 --port 3100
 ```
+
+## Prometheus 指标
+
+API 模式下 `GET /api/metrics` 端点返回 Prometheus text format 指标：
+
+| 指标 | 类型 | 标签 |
+|------|------|------|
+| agent_tasks_total | Counter | agent_type, status |
+| agent_steps_total | Counter | agent_type |
+| agent_tool_calls_total | Counter | agent_type, tool_name, success |
+| agent_tokens_total | Counter | provider, type |
+| agent_cost_yuan_total | Counter | provider |
+| agent_active_tasks | Gauge | agent_type |
 
 ## 环境要求
 
 - Node.js >= 20
+
+## v2.0 路线图
+
+| 优先级 | 方向 | 状态 |
+|--------|------|------|
+| P0 | 工作流引擎（YAML 定义多步骤流程、条件分支、人工审批） | 已完成 |
+| P1 | Agent 记忆系统（跨任务知识积累、会话摘要、项目上下文） | 已完成 |
+| P2 | 插件系统（用户自定义工具、MCP 协议、HTTP/脚本 handler） | 待开发 |
+| P3 | 协作增强（辩论模式、审查链、加权投票） | 待开发 |
+| P3 | Web Dashboard（浏览器端监控、成本分析、执行树可视化） | 待开发 |
 
 ## 许可证
 

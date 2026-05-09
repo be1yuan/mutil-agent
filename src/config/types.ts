@@ -65,6 +65,20 @@ export interface WorkflowsConfig {
   autoRecommend: boolean;
 }
 
+export interface MemoryConfig {
+  enabled: boolean;
+  /** Directory for persisted memory (default: ".memory") */
+  dir: string;
+  /** Max entries per session (default: 50) */
+  shortTermMaxEntries: number;
+  /** Max long-term knowledge entries (default: 500) */
+  longTermMaxEntries: number;
+  /** Token count threshold for auto-summarization (default: 8000) */
+  summarizationThreshold: number;
+  /** Auto-generate conversation summaries (default: true) */
+  autoSummarize: boolean;
+}
+
 export interface OrchestratorConfig {
   providers: Record<ModelProvider, ProviderConfig>;
   fallback: FallbackConfig;
@@ -74,6 +88,7 @@ export interface OrchestratorConfig {
   mailbox?: MailboxConfig;
   api?: ApiConfig;
   workflows?: WorkflowsConfig;
+  memory?: MemoryConfig;
 }
 
 /** Default config values */
@@ -111,5 +126,13 @@ export const DEFAULT_CONFIG: Partial<OrchestratorConfig> = {
     stateDir: ".workflow-state",
     defaultTimeout: 600_000,
     autoRecommend: true,
+  },
+  memory: {
+    enabled: true,
+    dir: ".memory",
+    shortTermMaxEntries: 50,
+    longTermMaxEntries: 500,
+    summarizationThreshold: 8000,
+    autoSummarize: true,
   },
 };

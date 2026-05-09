@@ -13,6 +13,8 @@ export interface ToolContext {
   mailbox?: Mailbox;
   /** Current agent type (for MailboxReceive default) */
   currentAgentType?: string;
+  /** Memory manager (if enabled) */
+  memory?: import("../memory/types.js").MemoryManagerInterface;
 }
 
 export async function executeTool(
@@ -42,6 +44,12 @@ export async function executeTool(
       return executeMailboxSend(args, ctx);
     case "MailboxReceive":
       return executeMailboxReceive(args, ctx);
+    case "MemoryRead":
+      return executeMemoryRead(args, ctx);
+    case "MemoryWrite":
+      return executeMemoryWrite(args, ctx);
+    case "MemorySearch":
+      return executeMemorySearch(args, ctx);
     default:
       return `[unknown tool] ${toolName}`;
   }
@@ -295,7 +303,6 @@ async function executeMailboxReceive(
   try {
     if (wait) {
       const msg = await ctx.mailbox.waitFor(agentType, { timeout });
-      // Mark as read after receiving
       await ctx.mailbox.markRead(agentType, msg.id);
       return JSON.stringify(msg, null, 2);
     } else {
@@ -303,7 +310,6 @@ async function executeMailboxReceive(
       if (messages.length === 0) {
         return JSON.stringify({ empty: true, agentType });
       }
-      // Mark all as read
       for (const msg of messages) {
         await ctx.mailbox.markRead(agentType, msg.id);
       }
@@ -312,4 +318,67 @@ async function executeMailboxReceive(
   } catch (err) {
     return `[mailbox error] ${err instanceof Error ? err.message : String(err)}`;
   }
+}
+
+// ── Memory tools ──
+
+async function executeMemoryRead(
+  args: Record<string, unknown>,
+  ctx?: ToolContext
+): Promise<string> {
+  if (!ctx?.memory) {
+    return "[memory error] Memory not enabled. Add memory config to orchestrator.yaml.";
+  }
+  const query = String(args.query ?? "");
+  const tags = args.tags as string[] | undefined;
+  const type = args.type as string | undefined;
+  const limit = Number(args.limit ?? 10);
+  const results = await ctx.memory.search(query, tags, type, limit);
+  if (results.length === 0) {
+    return JSON.stringify({ results: [], message: "No matching memories found." });
+  }
+  return JSON.stringify({ results, count: results.length }, null, 2);
+}
+
+async function executeMemoryWrite(
+  args: Record<string, unknown>,
+  ctx?: ToolContext
+): Promise<string> {
+  if (!ctx?.memory) {
+    return "[memory error] Memory not enabled.";
+  }
+  const rawType = String(args.type ?? "");
+  const VALID_TYPES = new Set(["fact", "decision", "preference", "context"]);
+  if (!VALID_TYPES.has(rawType)) {
+    return `[memory error] Invalid type: "${rawType}". Must be one of: ${[...VALID_TYPES].join(", ")}`;
+  }
+  const type = rawType as "fact" | "decision" | "preference" | "context";
+  const content = String(args.content ?? "");
+  const tags = (args.tags as string[]) ?? [];
+  if (!content) {
+    return "[memory error] content is required";
+  }
+  const id = await ctx.memory.write({
+    type,
+    content,
+    tags,
+    source: ctx.currentAgentType ?? "unknown",
+  });
+  return JSON.stringify({ written: true, id });
+}
+
+async function executeMemorySearch(
+  args: Record<string, unknown>,
+  ctx?: ToolContext
+): Promise<string> {
+  if (!ctx?.memory) {
+    return "[memory error] Memory not enabled.";
+  }
+  const query = String(args.query ?? "");
+  const tags = args.tags as string[] | undefined;
+  const results = await ctx.memory.search(query, tags);
+  if (results.length === 0) {
+    return JSON.stringify({ results: [], message: "No results found." });
+  }
+  return JSON.stringify({ results, count: results.length }, null, 2);
 }

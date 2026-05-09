@@ -58,6 +58,15 @@ const WorkflowsConfigSchema = z.object({
   autoRecommend: z.boolean().default(true),
 });
 
+const MemoryConfigSchema = z.object({
+  enabled: z.boolean().default(true),
+  dir: z.string().default(".memory"),
+  shortTermMaxEntries: z.number().int().min(1).default(50),
+  longTermMaxEntries: z.number().int().min(1).default(500),
+  summarizationThreshold: z.number().int().min(1000).default(8000),
+  autoSummarize: z.boolean().default(true),
+});
+
 const ConfigSchema = z.object({
   providers: z.record(z.enum(["deepseek", "zhipu", "mimo"]), ProviderConfigSchema).refine(
     (p) => Object.keys(p).length >= 1,
@@ -70,6 +79,7 @@ const ConfigSchema = z.object({
   mailbox: MailboxConfigSchema.default({}).optional(),
   api: ApiConfigSchema.default({}).optional(),
   workflows: WorkflowsConfigSchema.default({}).optional(),
+  memory: MemoryConfigSchema.default({}).optional(),
 });
 
 // ── Validation ──

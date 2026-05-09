@@ -102,6 +102,14 @@ const translations: Record<string, Record<Locale, string>> = {
   // ── Language ──
   "lang.switched": { en: "Language switched to English", zh: "语言已切换为中文" },
 
+  // ── Memory ──
+  "memory.list": { en: "Knowledge entries:", zh: "知识条目:" },
+  "memory.empty": { en: "No knowledge entries found.", zh: "没有找到知识条目。" },
+  "memory.search": { en: "Search results for", zh: "搜索结果:" },
+  "memory.noResults": { en: "No results found for", zh: "没有找到结果:" },
+  "memory.cleared": { en: "All knowledge entries cleared.", zh: "所有知识条目已清除。" },
+  "memory.notEnabled": { en: "Memory is not enabled. Add memory config to orchestrator.yaml.", zh: "记忆系统未启用。请在 orchestrator.yaml 中添加 memory 配置。" },
+
   // ── Generic ──
   "generic.yes": { en: "Y/n", zh: "Y/n" },
   "generic.cancel": { en: "Enter to cancel", zh: "按回车取消" },

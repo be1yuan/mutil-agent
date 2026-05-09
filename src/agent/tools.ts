@@ -1,4 +1,5 @@
 import type { ToolDefinition } from "../adapters/types.js";
+import { memoryTools } from "../memory/tools.js";
 
 // ── Task tool: spawn sub-agent ──
 
@@ -215,6 +216,7 @@ export const allTools: ToolDefinition[] = [
   mailboxSendTool,
   mailboxReceiveTool,
   taskTool,
+  ...memoryTools,
 ];
 
 /** Get tools filtered by what an agent is allowed to use */

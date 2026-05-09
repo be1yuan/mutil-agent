@@ -43,6 +43,8 @@ export interface AgentLoopDeps {
   getStreamPrefix?: (agentType: string) => string;
   /** File mailbox instance (if enabled) */
   mailbox?: Mailbox;
+  /** Memory manager (if enabled) */
+  memory?: import("../memory/types.js").MemoryManagerInterface;
   /** When true, the provider uses native web search — exclude custom WebSearch tool */
   nativeSearch?: boolean;
 
@@ -390,6 +392,7 @@ export class AgentLoop {
       return await executeTool(tc.name, tc.arguments, this.deps.workspaceDir, {
         mailbox: this.deps.mailbox,
         currentAgentType: definition.agentType,
+        memory: this.deps.memory,
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -527,20 +530,30 @@ export class AgentLoop {
   private estimateInputTokens(
     history: (import("../adapters/types.js").Message | import("../adapters/types.js").ToolResult)[]
   ): number {
-    let chars = 0;
-    for (const msg of history) {
-      if (typeof msg.content === "string") {
-        chars += msg.content.length;
-      } else if (Array.isArray(msg.content)) {
-        for (const block of msg.content) {
-          if ("text" in block && typeof block.text === "string") {
-            chars += block.text.length;
-          } else if ("content" in block && typeof block.content === "string") {
-            chars += block.content.length;
-          }
+    return estimateTokenCount(history);
+  }
+}
+
+/**
+ * Estimate token count from conversation history (chars/4 heuristic).
+ * Shared utility — used by both AgentLoop (budget checks) and Orchestrator (memory threshold).
+ */
+export function estimateTokenCount(
+  history: (import("../adapters/types.js").Message | import("../adapters/types.js").ToolResult)[]
+): number {
+  let chars = 0;
+  for (const msg of history) {
+    if (typeof msg.content === "string") {
+      chars += msg.content.length;
+    } else if (Array.isArray(msg.content)) {
+      for (const block of msg.content) {
+        if ("text" in block && typeof block.text === "string") {
+          chars += block.text.length;
+        } else if ("content" in block && typeof block.content === "string") {
+          chars += block.content.length;
         }
       }
     }
-    return Math.ceil(chars / 4);
   }
+  return Math.ceil(chars / 4);
 }

@@ -1,0 +1,73 @@
+# MutilAgentOrchestrator configuration
+# API keys are read from .env file via ${ENV_VAR} substitution
+
+providers:
+  deepseek:
+    apiKey: ${DEEPSEEK_API_KEY}
+    baseURL: https://api.deepseek.com/anthropic
+    defaultModel: deepseek-v4-pro
+    nativeSearch: true
+  zhipu:
+    apiKey: ${ZHIPU_API_KEY}
+    baseURL: https://open.bigmodel.cn/api/anthropic
+    defaultModel: glm-4.7
+  mimo:
+    apiKey: ${MIMO_API_KEY}
+    baseURL: https://api.xiaomimimo.com/anthropic
+    defaultModel: MiMo-V2.5-Pro
+    nativeSearch: true
+
+fallback:
+  maxRetries: 3
+  retryDelayMs: 1000
+  retryableErrors:
+    - rate_limit
+    - timeout
+    - server_error
+  fallbackModel:
+    provider: zhipu
+    model: glm-4.7
+
+security:
+  maxConcurrentAgents: 5
+  requireApproval:
+    - file.delete
+    - git.push
+    - git.push --force
+
+budget:
+  maxYuan: 35.0
+
+observability:
+  logLevel: info
+  metricsEnabled: true
+
+# File mailbox for cross-process Agent communication
+mailbox:
+  enabled: true
+  dir: .mailbox
+  maxAgeMs: 86400000      # 24 hours
+  pollIntervalMs: 500
+
+# HTTP API server configuration
+api:
+  enabled: true
+  host: 127.0.0.1
+  port: 3100
+  # authToken: ${API_AUTH_TOKEN}  # Optional Bearer token auth
+  cors: true
+
+# Workflow engine configuration
+workflows:
+  dir: .workflows              # Workflow YAML files directory
+  stateDir: .workflow-state    # Run state persistence directory
+  defaultTimeout: 600000       # Default per-step timeout (10 minutes)
+
+# Agent memory system configuration
+memory:
+  enabled: true                # Enable cross-task memory
+  dir: .memory                 # Memory storage directory
+  shortTermMaxEntries: 50      # Max entries per session
+  longTermMaxEntries: 500      # Max long-term knowledge entries
+  summarizationThreshold: 8000 # Token threshold for auto-summarization
+  autoSummarize: true          # Auto-generate conversation summaries

@@ -7,7 +7,7 @@ import { loadConfig, loadAgents } from "../config/loader.js";
 import { validateConfig } from "../config/validator.js";
 import { DeepSeekAdapter, GLMAdapter, MiMoAdapter } from "../adapters/anthropic-client.js";
 import { FallbackExecutor } from "../adapters/fallback-executor.js";
-import { AgentLoop } from "../agent/agent-loop.js";
+import { AgentLoop, estimateTokenCount } from "../agent/agent-loop.js";
 import { AdapterSelector } from "../agent/adapter-selector.js";
 import { PermissionResolver } from "../security/permission-resolver.js";
 import { CostTracker } from "../observability/cost-tracker.js";
@@ -16,6 +16,7 @@ import { Committee, type AggregationStrategy } from "../agent/committee.js";
 import { pruneStaleWorktrees } from "../agent/worktree-manager.js";
 import { isCheerioAvailable } from "../agent/web-tools.js";
 import { Mailbox } from "../agent/mailbox.js";
+import { MemoryManager } from "../memory/index.js";
 import { ApiServer } from "../api/server.js";
 import { createAppLogger, setLogger } from "../observability/logger.js";
 import {
@@ -69,6 +70,7 @@ class Orchestrator {
   private config!: import("../config/types.js").OrchestratorConfig;
   private mailbox?: Mailbox;
   private apiServer?: ApiServer;
+  memoryManager?: MemoryManager;
 
   constructor(
     private configPath: string,
@@ -152,6 +154,14 @@ class Orchestrator {
       this.logger.info("orchestrator.mailbox.initialized", { dir: mailboxDir });
     }
 
+    // Initialize memory manager (defaults are applied by Zod validator)
+    if (config.memory?.enabled !== false) {
+      const memConfig = config.memory!;
+      this.memoryManager = new MemoryManager(memConfig);
+      await this.memoryManager.init();
+      this.logger.info("orchestrator.memory.initialized", { dir: memConfig.dir });
+    }
+
     this.logger.info("orchestrator.init.complete", {
       providers: Array.from(this.adapters.keys()),
       agents: Array.from(this.agentDefinitions.keys()),
@@ -216,6 +226,7 @@ class Orchestrator {
       fallbackExecutor: this.fallbackExecutor,
       agentTypes: Array.from(this.agentDefinitions.keys()),
       mailbox: this.mailbox,
+      memory: this.memoryManager,
       nativeSearch,
       loadAgentDefinition: (type: string) => {
         const def = this.agentDefinitions.get(type);
@@ -272,6 +283,17 @@ class Orchestrator {
       // Preserve history for continuation
       if (result.history) {
         conversationHistory = result.history;
+      }
+
+      // Auto-summarize if conversation exceeds threshold
+      if (conversationHistory && this.memoryManager) {
+        await this.maybeAutoSummarize(
+          `session_${Date.now()}`,
+          resolvedTask,
+          agentType,
+          conversationHistory,
+          result.content
+        );
       }
 
       // Final cost bar + result
@@ -447,6 +469,7 @@ class Orchestrator {
       fallbackExecutor: this.fallbackExecutor,
       agentTypes: Array.from(this.agentDefinitions.keys()),
       mailbox: this.mailbox,
+      memory: this.memoryManager,
       nativeSearch,
       loadAgentDefinition: (type: string) => {
         const def = this.agentDefinitions.get(type);
@@ -525,6 +548,17 @@ class Orchestrator {
         // Preserve history for continuation
         if (result.history) {
           conversationHistory = result.history;
+        }
+
+        // Auto-summarize if conversation exceeds threshold
+        if (conversationHistory && this.memoryManager) {
+          await this.maybeAutoSummarize(
+            `session_${Date.now()}`,
+            actualTask,
+            agentType,
+            conversationHistory,
+            result.content
+          );
         }
 
         // Signal done to dashboard
@@ -923,6 +957,7 @@ class Orchestrator {
       fallbackExecutor: this.fallbackExecutor,
       agentTypes: Array.from(this.agentDefinitions.keys()),
       mailbox: this.mailbox,
+      memory: this.memoryManager,
       nativeSearch,
       loadAgentDefinition: (type: string) => {
         const def = this.agentDefinitions.get(type);
@@ -1048,6 +1083,7 @@ class Orchestrator {
       fallbackExecutor: this.fallbackExecutor,
       agentTypes: Array.from(this.agentDefinitions.keys()),
       mailbox: this.mailbox,
+      memory: this.memoryManager,
       nativeSearch,
       loadAgentDefinition: (type: string) => {
         const def = this.agentDefinitions.get(type);
@@ -1437,6 +1473,7 @@ class Orchestrator {
       fallbackExecutor: this.fallbackExecutor,
       agentTypes: Array.from(this.agentDefinitions.keys()),
       mailbox: this.mailbox,
+      memory: this.memoryManager,
       nativeSearch,
       loadAgentDefinition: (type: string) => {
         const def = this.agentDefinitions.get(type);
@@ -1461,6 +1498,46 @@ class Orchestrator {
             process.stdout.write(text);
           },
     };
+  }
+
+  /** Auto-summarize conversation history when it exceeds the threshold. */
+  private async maybeAutoSummarize(
+    sessionId: string,
+    task: string,
+    agentType: string,
+    history: (import("../adapters/types.js").Message | import("../adapters/types.js").ToolResult)[],
+    resultContent?: string
+  ): Promise<void> {
+    if (!this.memoryManager || !this.config.memory?.autoSummarize) return;
+
+    const threshold = this.config.memory?.summarizationThreshold ?? 8000;
+    const tokens = estimateTokenCount(history);
+    if (tokens < threshold) return;
+
+    const summaryText = resultContent
+      ? `Task result: ${resultContent.slice(0, 500)}`
+      : `Conversation reached ${tokens} tokens (threshold: ${threshold})`;
+
+    try {
+      await this.memoryManager.summarize(
+        sessionId,
+        task,
+        agentType,
+        history,
+        summaryText,
+        [],
+        tokens
+      );
+      this.logger.info("orchestrator.memory.auto_summarized", {
+        sessionId,
+        tokens,
+        threshold,
+      });
+    } catch (err) {
+      this.logger.warn("orchestrator.memory.summarize_failed", {
+        error: (err as Error).message,
+      });
+    }
   }
 }
 
@@ -1718,6 +1795,92 @@ workflowCmd
       budget: options.budget,
       quiet: options.quiet,
     });
+  });
+
+// ── Memory commands ──
+
+const memoryCmd = program
+  .command("memory")
+  .description("Manage agent memory");
+
+memoryCmd
+  .command("list")
+  .description("List all knowledge entries")
+  .option("-c, --config <path>", "Config file path", "orchestrator.yaml")
+  .action(async (options: { config: string }) => {
+    const agentsDir = path.join(path.dirname(options.config), ".agents");
+    const orchestrator = new Orchestrator(options.config, agentsDir);
+    await orchestrator.init();
+
+    if (!orchestrator.memoryManager) {
+      console.log(style.warning(`  ${t("memory.notEnabled")}`));
+      return;
+    }
+
+    const entries = await orchestrator.memoryManager.listKnowledge();
+    if (entries.length === 0) {
+      console.log(style.dim(`  ${t("memory.empty")}`));
+      return;
+    }
+    console.log(style.bold(`  ${t("memory.list")}`));
+    console.log();
+    for (const entry of entries) {
+      const time = new Date(entry.timestamp).toLocaleString();
+      const tagStr = entry.tags.length > 0 ? ` [${entry.tags.join(", ")}]` : "";
+      console.log(`  ${style.bold(entry.id)} ${style.dim(`(${entry.type})${tagStr} · ${time}`)}`);
+      console.log(`    ${style.dim(entry.content.slice(0, 120) + (entry.content.length > 120 ? "..." : ""))}`);
+      console.log();
+    }
+  });
+
+memoryCmd
+  .command("search")
+  .description("Search knowledge entries")
+  .argument("<query>", "Search query")
+  .option("-c, --config <path>", "Config file path", "orchestrator.yaml")
+  .option("-t, --tags <tags>", "Filter by tags (comma-separated)")
+  .action(async (query: string, options: { config: string; tags?: string }) => {
+    const agentsDir = path.join(path.dirname(options.config), ".agents");
+    const orchestrator = new Orchestrator(options.config, agentsDir);
+    await orchestrator.init();
+
+    if (!orchestrator.memoryManager) {
+      console.log(style.warning(`  ${t("memory.notEnabled")}`));
+      return;
+    }
+
+    const tags = options.tags ? options.tags.split(",").map((t) => t.trim()).filter(Boolean) : undefined;
+    const results = await orchestrator.memoryManager.search(query, tags);
+    if (results.length === 0) {
+      console.log(style.dim(`  ${t("memory.noResults")} "${query}"`));
+      return;
+    }
+    console.log(style.bold(`  ${t("memory.search")} "${query}" (${results.length} results):`));
+    console.log();
+    for (const entry of results) {
+      const time = new Date(entry.timestamp).toLocaleString();
+      console.log(`  ${style.bold(entry.id)} ${style.dim(`(${entry.type}) · ${time}`)}`);
+      console.log(`    ${entry.content.slice(0, 160)}`);
+      console.log();
+    }
+  });
+
+memoryCmd
+  .command("clear")
+  .description("Clear all knowledge entries")
+  .option("-c, --config <path>", "Config file path", "orchestrator.yaml")
+  .action(async (options: { config: string }) => {
+    const agentsDir = path.join(path.dirname(options.config), ".agents");
+    const orchestrator = new Orchestrator(options.config, agentsDir);
+    await orchestrator.init();
+
+    if (!orchestrator.memoryManager) {
+      console.log(style.warning(`  ${t("memory.notEnabled")}`));
+      return;
+    }
+
+    await orchestrator.memoryManager.clear();
+    console.log(style.success(`  ${t("memory.cleared")}`));
   });
 
 // Default action: "agent-orch" or "agent-orch <task>" (no subcommand) — Claude-like UX

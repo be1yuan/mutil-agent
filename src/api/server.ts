@@ -218,6 +218,44 @@ export class ApiServer {
         return;
       }
 
+      // ── Memory endpoints ──
+
+      // List knowledge entries
+      if (path === "/api/memory" && method === "GET") {
+        if (!this.deps.memory) {
+          this.json(res, 404, { error: "Memory not enabled" });
+          return;
+        }
+        const entries = await this.deps.memory.listKnowledge();
+        this.json(res, 200, { entries, count: entries.length });
+        return;
+      }
+
+      // Search knowledge entries
+      if (path === "/api/memory/search" && method === "GET") {
+        if (!this.deps.memory) {
+          this.json(res, 404, { error: "Memory not enabled" });
+          return;
+        }
+        const q = url.searchParams.get("q") ?? "";
+        const tagsParam = url.searchParams.get("tags");
+        const tags = tagsParam ? tagsParam.split(",").map((t) => t.trim()).filter(Boolean) : undefined;
+        const results = await this.deps.memory.search(q, tags);
+        this.json(res, 200, { results, count: results.length });
+        return;
+      }
+
+      // Clear knowledge entries
+      if (path === "/api/memory" && method === "DELETE") {
+        if (!this.deps.memory) {
+          this.json(res, 404, { error: "Memory not enabled" });
+          return;
+        }
+        await this.deps.memory.clear();
+        this.json(res, 200, { cleared: true });
+        return;
+      }
+
       // Prometheus metrics
       if (path === "/api/metrics" && method === "GET") {
         if (!this.metrics) {

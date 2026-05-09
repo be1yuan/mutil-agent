@@ -464,7 +464,7 @@ export function App({
                 <TextInput
                   value={chatInput}
                   onChange={setChatInput}
-                  onSubmit={(value) => {
+                  onSubmit={(value: string) => {
                     if (value.trim()) {
                       bridge.resolveUserAction({ type: "continue", message: value.trim() });
                       setIsChatInput(false);

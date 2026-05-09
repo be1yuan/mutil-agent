@@ -13,7 +13,7 @@
 
 import { AgentLoop, type AgentLoopDeps } from "../agent/agent-loop.js";
 import { Committee, type CommitteeConfig } from "../agent/committee.js";
-import type { AgentResult } from "../types/core.js";
+import type { AgentResult, ModelProvider } from "../types/core.js";
 import { getLogger } from "../observability/logger.js";
 import { resolveTemplate } from "./template-resolver.js";
 import { WorkflowStateStore } from "./state-store.js";
@@ -442,9 +442,13 @@ export class WorkflowEngine {
     const stepBudget = step.budget ?? budget;
     const definition = this.deps.agentLoopDeps.loadAgentDefinition(step.agentType);
 
-    const effectiveDef = step.maxSteps
-      ? { ...definition, maxSteps: step.maxSteps }
-      : definition;
+    // Apply step-level model/provider overrides
+    const effectiveDef = {
+      ...definition,
+      ...(step.maxSteps ? { maxSteps: step.maxSteps } : {}),
+      ...(step.model ? { model: step.model } : {}),
+      ...(step.provider ? { provider: step.provider as ModelProvider } : {}),
+    };
 
     const startedAt = Date.now();
 

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { handleCommand, findWorkflowByName, type CommandContext } from "./repl-commands.js";
+import { handleCommand, findWorkflowByName, fuzzyMatchCommand, type CommandContext } from "./repl-commands.js";
 import type { WorkflowDefinition } from "../workflow/types.js";
 import type { AgentDefinition } from "../agent/types.js";
 
@@ -126,5 +126,44 @@ describe("findWorkflowByName", () => {
 
   it("returns undefined for no match", () => {
     expect(findWorkflowByName("nonexistent", workflows)).toBeUndefined();
+  });
+});
+
+describe("fuzzyMatchCommand", () => {
+  it("returns undefined for exact match (no hint needed)", () => {
+    expect(fuzzyMatchCommand("/model")).toBeUndefined();
+    expect(fuzzyMatchCommand("/workflow")).toBeUndefined();
+    expect(fuzzyMatchCommand("/exit")).toBeUndefined();
+  });
+
+  it("returns undefined for non-slash input", () => {
+    expect(fuzzyMatchCommand("model")).toBeUndefined();
+  });
+
+  it("matches prefix when unambiguous", () => {
+    expect(fuzzyMatchCommand("/mod")).toBe("/model");
+    expect(fuzzyMatchCommand("/langu")).toBe("/language");
+    expect(fuzzyMatchCommand("/sav")).toBe("/save");
+    expect(fuzzyMatchCommand("/wo")).toBe("/workflow");
+  });
+
+  it("returns undefined when prefix is ambiguous", () => {
+    // "/lan" is ambiguous (/language + /lang)
+    expect(fuzzyMatchCommand("/lan")).toBeUndefined();
+  });
+
+  it("matches by edit distance for typos", () => {
+    expect(fuzzyMatchCommand("/modle")).toBe("/model");     // 1 swap
+    expect(fuzzyMatchCommand("/exti")).toBe("/exit");       // 1 swap
+    expect(fuzzyMatchCommand("/worfklow")).toBe("/workflow"); // 1 transposition
+  });
+
+  it("returns undefined for completely unrelated input", () => {
+    expect(fuzzyMatchCommand("/xyzabc")).toBeUndefined();
+  });
+
+  it("strips arguments before matching", () => {
+    expect(fuzzyMatchCommand("/mod some args")).toBe("/model");
+    expect(fuzzyMatchCommand("/sav file.txt")).toBe("/save");
   });
 });

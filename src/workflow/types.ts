@@ -5,7 +5,7 @@
  * conditional branching, and checkpoint/pause-resume semantics.
  */
 
-import type { AgentResult } from "../types/core.js";
+import type { AgentResult, ModelProvider } from "../types/core.js";
 
 // ── Step types ──
 
@@ -23,6 +23,8 @@ export interface WorkflowStep {
   agentType?: string;          // type=agent
   agentTypes?: string[];       // type=committee
   task: string;                // supports ${var} and ${steps.id.content} interpolation
+  model?: string;              // override agent's default model for this step
+  provider?: ModelProvider;    // override agent's default provider for this step
   maxSteps?: number;
   budget?: number;             // per-step budget cap (yuan)
   timeout?: number;            // per-step timeout (ms)

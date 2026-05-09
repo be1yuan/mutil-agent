@@ -40,8 +40,9 @@ import {
   type WorkflowRun,
 } from "../workflow/index.js";
 import { matchWorkflow } from "../agent/workflow-matcher.js";
-import { handleCommand, findWorkflowByName } from "./repl-commands.js";
+import { handleCommand, findWorkflowByName, fuzzyMatchCommand } from "./repl-commands.js";
 import { runWorkflowWizard } from "./workflow-wizard.js";
+import { t, toggleLocale } from "./i18n.js";
 import type { ModelAdapter } from "../adapters/types.js";
 import type { AgentDefinition } from "../agent/types.js";
 import type { ModelProvider } from "../types/core.js";
@@ -358,17 +359,22 @@ class Orchestrator {
 
       if (answer === "/help" || answer === "/h" || answer === "/") {
         console.log();
-        console.log(style.bold("  Slash commands:"));
-        console.log(style.dim("  /save   Save result to file"));
-        console.log(style.dim("  /model  Switch AI model"));
-        console.log(style.dim("  /exit   Exit"));
+        console.log(style.bold(`  ${t("help.title")}`));
+        console.log(style.dim(`  /save   ${t("help.save")}`));
+        console.log(style.dim(`  /model  ${t("help.model")}`));
+        console.log(style.dim(`  /exit   ${t("help.exit")}`));
         console.log();
         continue;
       }
 
       if (answer.startsWith("/")) {
-        console.log(style.warning(`  Unknown command: ${answer.split(/\s+/)[0]}`));
-        console.log(style.dim("  Type /help to see available commands."));
+        const cmd = answer.split(/\s+/)[0];
+        const hint = fuzzyMatchCommand(cmd);
+        console.log(style.warning(`  ${t("cmd.unknown")} ${cmd}`));
+        if (hint) {
+          console.log(style.dim(`  ${t("cmd.didYouMean")} ${style.bold(hint)}?`));
+        }
+        console.log(style.dim(`  ${t("cmd.typeHelp")}`));
         console.log();
         continue;
       }
@@ -383,7 +389,7 @@ class Orchestrator {
     const readline = await import("node:readline");
 
     console.log();
-    console.log(style.bold("  Models:"));
+    console.log(style.bold(`  ${t("model.title")}`));
     for (let i = 0; i < MODEL_CATALOG.length; i++) {
       const m = MODEL_CATALOG[i];
       const marker = m.model === definition.model ? style.success(" ●") : "  ";
@@ -397,14 +403,14 @@ class Orchestrator {
     });
 
     return new Promise((resolve) => {
-      rl.question(style.bold(`  Select [1-${MODEL_CATALOG.length}, Enter to cancel]: `), (choice) => {
+      rl.question(style.bold(`  ${t("model.select")} [1-${MODEL_CATALOG.length}, ${t("model.cancel")}]: `), (choice) => {
         rl.close();
         const idx = parseInt(choice.trim(), 10) - 1;
         if (idx >= 0 && idx < MODEL_CATALOG.length) {
           const selected = MODEL_CATALOG[idx];
           definition.model = selected.model;
           definition.provider = selected.provider;
-          console.log(style.success(`  Switched to ${selected.label} (${selected.model})`));
+          console.log(style.success(`  ${t("model.switched")} ${selected.label} (${selected.model})`));
           resolve(true);
         } else {
           resolve(false);
@@ -575,9 +581,9 @@ class Orchestrator {
   async promptTask(): Promise<string> {
     const readline = await import("node:readline");
     console.log();
-    console.log(style.bold("  Welcome to agent-orch — self-orchestrating multi-agent CLI"));
-    console.log(style.dim("  Type your task below and press Enter. Subcommands: run | committee | serve | list-agents | validate | init"));
-    console.log(style.dim("  /model to switch model  /workflow for workflows  /agent for agents  /exit to quit  /help for commands"));
+    console.log(style.bold(`  ${t("welcome.title")}`));
+    console.log(style.dim(`  ${t("welcome.hint")}`));
+    console.log(style.dim(`  ${t("welcome.commands")}`));
     console.log();
 
     while (true) {
@@ -612,11 +618,19 @@ class Orchestrator {
 
       if (lower === "/help" || lower === "/h" || lower === "/") {
         console.log();
-        console.log(style.bold("  Slash commands:"));
-        console.log(style.dim("  /model       Switch AI model"));
-        console.log(style.dim("  /workflow    Workflow management (list, run, new, status)"));
-        console.log(style.dim("  /agent       Agent management (list)"));
-        console.log(style.dim("  /exit        Exit"));
+        console.log(style.bold(`  ${t("help.title")}`));
+        console.log(style.dim(`  /model       ${t("help.model")}`));
+        console.log(style.dim(`  /workflow    ${t("help.workflow")}`));
+        console.log(style.dim(`  /agent       ${t("help.agent")}`));
+        console.log(style.dim(`  /language    ${t("help.language")}`));
+        console.log(style.dim(`  /exit        ${t("help.exit")}`));
+        console.log();
+        continue;
+      }
+
+      if (lower === "/language" || lower === "/lang") {
+        toggleLocale();
+        console.log(style.success(`  ${t("lang.switched")}`));
         console.log();
         continue;
       }
@@ -640,7 +654,7 @@ class Orchestrator {
             const wfConfig = this.config.workflows;
             const workspaceDir = path.dirname(path.resolve(this.configPath));
             const wfDir = path.join(workspaceDir, wfConfig?.dir ?? ".workflows");
-            const result = await runWorkflowWizard(wfDir, Array.from(this.agentDefinitions.keys()));
+            const result = await runWorkflowWizard(wfDir, this.agentDefinitions, MODEL_CATALOG);
             if (result) {
               this.workflowDefinitions.push(result.definition);
               this.workflowMatchCache.clear(); // invalidate cache after new workflow
@@ -655,14 +669,19 @@ class Orchestrator {
       }
 
       if (lower.startsWith("/")) {
-        console.log(style.warning(`  Unknown command: ${lower.split(/\s+/)[0]}`));
-        console.log(style.dim("  Type /help to see available commands."));
+        const cmd = lower.split(/\s+/)[0];
+        const hint = fuzzyMatchCommand(cmd);
+        console.log(style.warning(`  ${t("cmd.unknown")} ${cmd}`));
+        if (hint) {
+          console.log(style.dim(`  ${t("cmd.didYouMean")} ${style.bold(hint)}?`));
+        }
+        console.log(style.dim(`  ${t("cmd.typeHelp")}`));
         console.log();
         continue;
       }
 
       if (!trimmed) {
-        console.error(style.error("  Task cannot be empty. Type /help for commands, /exit to quit."));
+        console.error(style.error(`  ${t("cmd.taskEmpty")}`));
         console.log();
         continue;
       }
@@ -702,11 +721,11 @@ class Orchestrator {
 
       // Show recommendation
       console.log();
-      console.log(style.success(`  Found matching workflow: ${style.bold(match.workflowName)}`));
+      console.log(style.success(`  ${t("wf.found")} ${style.bold(match.workflowName)}`));
       if (match.workflowDescription) {
         console.log(style.dim(`  ${match.workflowDescription}`));
       }
-      console.log(style.dim(`  ${match.stepCount} steps`));
+      console.log(style.dim(`  ${match.stepCount} ${t("wf.steps")}`));
       console.log();
 
       const readline = await import("node:readline");
@@ -715,7 +734,7 @@ class Orchestrator {
         output: process.stdout,
       });
       const answer = await new Promise<string>((resolve) => {
-        rl.question("  Use this workflow? [Y/n] ", (ans) => {
+        rl.question(`  ${t("wf.use")} `, (ans) => {
           rl.close();
           resolve(ans.trim().toLowerCase());
         });
@@ -750,13 +769,13 @@ class Orchestrator {
   /** List loaded workflow definitions. */
   private listLoadedWorkflows(): void {
     if (this.workflowDefinitions.length === 0) {
-      console.log(style.dim("  No workflows loaded."));
+      console.log(style.dim(`  ${t("wf.none")}`));
       return;
     }
     console.log();
-    console.log(style.bold("  Available workflows:"));
+    console.log(style.bold(`  ${t("wf.available")}`));
     for (const wf of this.workflowDefinitions) {
-      console.log(`    ${style.bold(wf.name)} — ${wf.description} (${wf.steps.length} steps)`);
+      console.log(`    ${style.bold(wf.name)} — ${wf.description} (${wf.steps.length} ${t("wf.steps")})`);
     }
     console.log();
   }
@@ -831,16 +850,16 @@ class Orchestrator {
 
     console.log();
     console.log(style.dim("──────────────────────────────────────────────"));
-    console.log(style.bold("  How would you like to execute this task?"));
+    console.log(style.bold(`  ${t("mode.title")}`));
     console.log();
-    console.log(`  ${style.bold("1.")} Single Agent`);
-    console.log(style.dim("     Main agent executes directly — fast, no sub-agent delegation"));
+    console.log(`  ${style.bold("1.")} ${t("mode.single")}`);
+    console.log(style.dim(`     ${t("mode.single.desc")}`));
     console.log();
-    console.log(`  ${style.bold("2.")} Self-Orchestration (default)`);
-    console.log(style.dim("     Main agent decides whether to delegate via task tool"));
+    console.log(`  ${style.bold("2.")} ${t("mode.auto")}`);
+    console.log(style.dim(`     ${t("mode.auto.desc")}`));
     console.log();
-    console.log(`  ${style.bold("3.")} Multi-Agent Committee`);
-    console.log(style.dim("     explore + coder + reviewer + architect work in parallel"));
+    console.log(`  ${style.bold("3.")} ${t("mode.committee")}`);
+    console.log(style.dim(`     ${t("mode.committee.desc")}`));
     console.log(style.dim("──────────────────────────────────────────────"));
     console.log();
 
@@ -986,16 +1005,21 @@ class Orchestrator {
 
       if (answer === "/help" || answer === "/h" || answer === "/") {
         console.log();
-        console.log(style.bold("  Slash commands:"));
-        console.log(style.dim("  /save  Save result to file"));
-        console.log(style.dim("  /exit  Exit"));
+        console.log(style.bold(`  ${t("help.title")}`));
+        console.log(style.dim(`  /save  ${t("help.save")}`));
+        console.log(style.dim(`  /exit  ${t("help.exit")}`));
         console.log();
         continue;
       }
 
       if (answer.startsWith("/")) {
-        console.log(style.warning(`  Unknown command: ${answer.split(/\s+/)[0]}`));
-        console.log(style.dim("  Type /help to see available commands."));
+        const cmd = answer.split(/\s+/)[0];
+        const hint = fuzzyMatchCommand(cmd);
+        console.log(style.warning(`  ${t("cmd.unknown")} ${cmd}`));
+        if (hint) {
+          console.log(style.dim(`  ${t("cmd.didYouMean")} ${style.bold(hint)}?`));
+        }
+        console.log(style.dim(`  ${t("cmd.typeHelp")}`));
         console.log();
         continue;
       }

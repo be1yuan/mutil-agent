@@ -95,6 +95,7 @@ describe("WorkflowEngine", () => {
   it("executes a sequential workflow", async () => {
     const definition: WorkflowDefinition = {
       name: "test",
+      description: "Test sequential workflow",
       steps: [
         { id: "s1", type: "agent", agentType: "explore", task: "Step 1" },
         { id: "s2", type: "agent", agentType: "coder", task: "Step 2" },
@@ -116,6 +117,7 @@ describe("WorkflowEngine", () => {
   it("executes a committee step", async () => {
     const definition: WorkflowDefinition = {
       name: "committee-test",
+      description: "Test committee workflow",
       steps: [
         {
           id: "c1",
@@ -137,6 +139,7 @@ describe("WorkflowEngine", () => {
   it("evaluates condition and routes to then branch", async () => {
     const definition: WorkflowDefinition = {
       name: "branch-then",
+      description: "Test branch then",
       steps: [
         { id: "s1", type: "agent", agentType: "explore", task: "Step 1" },
         {
@@ -166,6 +169,7 @@ describe("WorkflowEngine", () => {
   it("routes to else when condition is not met", async () => {
     const definition: WorkflowDefinition = {
       name: "branch-else",
+      description: "Test branch else",
       steps: [
         { id: "s1", type: "agent", agentType: "explore", task: "Step 1" },
         {
@@ -195,6 +199,7 @@ describe("WorkflowEngine", () => {
   it("auto-approves checkpoint when autoApprove is true", async () => {
     const definition: WorkflowDefinition = {
       name: "checkpoint-auto",
+      description: "Test checkpoint auto-approve",
       steps: [
         { id: "s1", type: "agent", agentType: "explore", task: "Step 1" },
         {
@@ -218,6 +223,7 @@ describe("WorkflowEngine", () => {
   it("pauses at checkpoint when onCheckpoint returns false", async () => {
     const definition: WorkflowDefinition = {
       name: "checkpoint-pause",
+      description: "Test checkpoint pause",
       steps: [
         { id: "s1", type: "agent", agentType: "explore", task: "Step 1" },
         {
@@ -243,6 +249,7 @@ describe("WorkflowEngine", () => {
   it("resumes from a paused checkpoint", async () => {
     const definition: WorkflowDefinition = {
       name: "resume-test",
+      description: "Test resume from checkpoint",
       steps: [
         { id: "s1", type: "agent", agentType: "explore", task: "Step 1" },
         {
@@ -283,6 +290,7 @@ describe("WorkflowEngine", () => {
     try {
       const definition: WorkflowDefinition = {
         name: "vars-test",
+        description: "Test variable interpolation",
         variables: { dir: "src" },
         steps: [
           { id: "s1", type: "agent", agentType: "explore", task: "Analyze ${dir}" },
@@ -304,6 +312,7 @@ describe("WorkflowEngine", () => {
     const completedSteps: string[] = [];
     const definition: WorkflowDefinition = {
       name: "callback-test",
+      description: "Test step callback",
       steps: [
         { id: "s1", type: "agent", agentType: "explore", task: "Step 1" },
       ],
@@ -323,6 +332,7 @@ describe("WorkflowEngine", () => {
     const statuses: string[] = [];
     const definition: WorkflowDefinition = {
       name: "status-callback",
+      description: "Test status callback",
       steps: [
         { id: "s1", type: "agent", agentType: "explore", task: "Step 1" },
       ],
@@ -352,6 +362,7 @@ describe("WorkflowEngine", () => {
     try {
       const definition: WorkflowDefinition = {
         name: "fail-test",
+        description: "Test failure handling",
         steps: [
           { id: "s1", type: "agent", agentType: "explore", task: "Fail" },
           { id: "s2", type: "agent", agentType: "coder", task: "Should not run" },
@@ -372,6 +383,7 @@ describe("WorkflowEngine", () => {
   it("persists state across steps", async () => {
     const definition: WorkflowDefinition = {
       name: "persist-test",
+      description: "Test state persistence",
       steps: [
         { id: "s1", type: "agent", agentType: "explore", task: "Step 1" },
         { id: "s2", type: "agent", agentType: "coder", task: "Step 2" },

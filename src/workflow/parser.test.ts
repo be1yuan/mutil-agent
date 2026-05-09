@@ -74,6 +74,7 @@ steps:
   it("parses committee step", () => {
     const yaml = `
 name: committee-test
+description: A committee test workflow
 steps:
   - id: c1
     type: committee

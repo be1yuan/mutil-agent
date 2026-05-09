@@ -40,7 +40,7 @@ const WorkflowStepSchema = z.object({
 
 const WorkflowDefinitionSchema = z.object({
   name: z.string().min(1, "Workflow name is required"),
-  description: z.string().optional(),
+  description: z.string().min(1, "Description is required for workflow matching"),
   version: z.string().optional(),
   steps: z.array(WorkflowStepSchema).min(1, "At least one step is required"),
   variables: z.record(z.string()).optional(),

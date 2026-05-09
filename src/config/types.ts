@@ -61,6 +61,8 @@ export interface WorkflowsConfig {
   stateDir: string;
   /** Default per-step timeout in ms (default: 600000 = 10min) */
   defaultTimeout: number;
+  /** Auto-recommend matching workflows when user types a task (default: true) */
+  autoRecommend: boolean;
 }
 
 export interface OrchestratorConfig {
@@ -108,5 +110,6 @@ export const DEFAULT_CONFIG: Partial<OrchestratorConfig> = {
     dir: ".workflows",
     stateDir: ".workflow-state",
     defaultTimeout: 600_000,
+    autoRecommend: true,
   },
 };

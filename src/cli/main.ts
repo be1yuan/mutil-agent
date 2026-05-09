@@ -39,6 +39,9 @@ import {
   type WorkflowDefinition,
   type WorkflowRun,
 } from "../workflow/index.js";
+import { matchWorkflow } from "../agent/workflow-matcher.js";
+import { handleCommand, findWorkflowByName } from "./repl-commands.js";
+import { runWorkflowWizard } from "./workflow-wizard.js";
 import type { ModelAdapter } from "../adapters/types.js";
 import type { AgentDefinition } from "../agent/types.js";
 import type { ModelProvider } from "../types/core.js";
@@ -59,6 +62,8 @@ class Orchestrator {
   private adapters: Map<ModelProvider, ModelAdapter> = new Map();
   private fallbackExecutor!: FallbackExecutor;
   private agentDefinitions: Map<string, AgentDefinition> = new Map();
+  private workflowDefinitions: WorkflowDefinition[] = [];
+  private workflowMatchCache: Map<string, string> = new Map();
   private logger!: ReturnType<typeof createAppLogger>;
   private config!: import("../config/types.js").OrchestratorConfig;
   private mailbox?: Mailbox;
@@ -104,6 +109,35 @@ class Orchestrator {
     const loadedAgents = await loadAgents(this.agentsDir);
     for (const [agentType, loaded] of loadedAgents) {
       this.agentDefinitions.set(agentType, loaded.definition);
+    }
+
+    // Load workflow definitions
+    const wfConfig = config.workflows;
+    if (wfConfig) {
+      const wfDir = path.join(workspaceDir, wfConfig.dir);
+      try {
+        const entries = await fs.promises.readdir(wfDir).catch(() => []);
+        for (const entry of entries) {
+          if (!entry.endsWith(".yaml") && !entry.endsWith(".yml")) continue;
+          try {
+            const wf = await loadWorkflow(path.join(wfDir, entry));
+            this.workflowDefinitions.push(wf);
+          } catch (err) {
+            this.logger.warn("orchestrator.workflow.load.failed", {
+              file: entry,
+              error: (err as Error).message,
+            });
+          }
+        }
+        if (this.workflowDefinitions.length > 0) {
+          this.logger.info("orchestrator.workflows.loaded", {
+            count: this.workflowDefinitions.length,
+            names: this.workflowDefinitions.map((w) => w.name),
+          });
+        }
+      } catch {
+        // workflows dir doesn't exist — not an error
+      }
     }
 
     // Initialize mailbox (opt-in: must explicitly set enabled: true)
@@ -537,13 +571,13 @@ class Orchestrator {
   }
 
   /** Interactively prompt for a task description (no subcommand mode).
-   *  Slash commands (/model, /exit) are handled inline and re-prompt. */
+   *  Slash commands (/model, /exit, /workflow, /agent) are handled inline and re-prompt. */
   async promptTask(): Promise<string> {
     const readline = await import("node:readline");
     console.log();
     console.log(style.bold("  Welcome to agent-orch — self-orchestrating multi-agent CLI"));
     console.log(style.dim("  Type your task below and press Enter. Subcommands: run | committee | serve | list-agents | validate | init"));
-    console.log(style.dim("  /model to switch model  /exit to quit  /help for commands"));
+    console.log(style.dim("  /model to switch model  /workflow for workflows  /agent for agents  /exit to quit  /help for commands"));
     console.log();
 
     while (true) {
@@ -579,9 +613,44 @@ class Orchestrator {
       if (lower === "/help" || lower === "/h" || lower === "/") {
         console.log();
         console.log(style.bold("  Slash commands:"));
-        console.log(style.dim("  /model  Switch AI model"));
-        console.log(style.dim("  /exit   Exit"));
+        console.log(style.dim("  /model       Switch AI model"));
+        console.log(style.dim("  /workflow    Workflow management (list, run, new, status)"));
+        console.log(style.dim("  /agent       Agent management (list)"));
+        console.log(style.dim("  /exit        Exit"));
         console.log();
+        continue;
+      }
+
+      // Handle /workflow and /agent commands
+      if (lower.startsWith("/workflow") || lower.startsWith("/wf") || lower.startsWith("/agent")) {
+        const cmdResult = await handleCommand(trimmed, {
+          workflows: this.workflowDefinitions,
+          agents: this.agentDefinitions,
+          onRunWorkflow: async (name: string) => {
+            const wf = findWorkflowByName(name, this.workflowDefinitions);
+            if (!wf) {
+              console.log(style.error(`  Workflow "${name}" not found.`));
+              return;
+            }
+            await this.runWorkflowByName(wf);
+          },
+          onListWorkflows: () => this.listLoadedWorkflows(),
+          onWorkflowStatus: async (id: string) => { await this.workflowStatus(id); },
+          onNewWorkflow: async () => {
+            const wfConfig = this.config.workflows;
+            const workspaceDir = path.dirname(path.resolve(this.configPath));
+            const wfDir = path.join(workspaceDir, wfConfig?.dir ?? ".workflows");
+            const result = await runWorkflowWizard(wfDir, Array.from(this.agentDefinitions.keys()));
+            if (result) {
+              this.workflowDefinitions.push(result.definition);
+              this.workflowMatchCache.clear(); // invalidate cache after new workflow
+            }
+          },
+          onListAgents: () => this.listAgents(),
+        });
+        if (cmdResult.continue) {
+          console.log();
+        }
         continue;
       }
 
@@ -598,8 +667,161 @@ class Orchestrator {
         continue;
       }
 
+      // Smart workflow matching
+      const wfConfig = this.config.workflows;
+      if (wfConfig?.autoRecommend !== false && this.workflowDefinitions.length > 0) {
+        const match = await this.tryWorkflowMatch(trimmed);
+        if (match) {
+          return match; // user accepted — will be handled as workflow run
+        }
+      }
+
       return trimmed;
     }
+  }
+
+  /** Try to match user task against loaded workflows. Returns workflow run command or null. */
+  private async tryWorkflowMatch(task: string): Promise<string | null> {
+    try {
+      // Use the cheapest available provider for matching
+      const provider = this.getMatchingProvider();
+      if (!provider) return null;
+
+      const match = await matchWorkflow(
+        task,
+        this.workflowDefinitions,
+        {
+          fallbackExecutor: this.fallbackExecutor,
+          model: provider.model,
+          provider: provider.provider,
+        },
+        this.workflowMatchCache
+      );
+
+      if (!match.matched || !match.workflowName) return null;
+
+      // Show recommendation
+      console.log();
+      console.log(style.success(`  Found matching workflow: ${style.bold(match.workflowName)}`));
+      if (match.workflowDescription) {
+        console.log(style.dim(`  ${match.workflowDescription}`));
+      }
+      console.log(style.dim(`  ${match.stepCount} steps`));
+      console.log();
+
+      const readline = await import("node:readline");
+      const rl = readline.createInterface({
+        input: process.stdin,
+        output: process.stdout,
+      });
+      const answer = await new Promise<string>((resolve) => {
+        rl.question("  Use this workflow? [Y/n] ", (ans) => {
+          rl.close();
+          resolve(ans.trim().toLowerCase());
+        });
+      });
+
+      if (answer === "n" || answer === "no") {
+        return null; // Fall through to normal agent execution
+      }
+
+      // Return a marker that signals workflow execution (uses sentinel unlikely to collide with user input)
+      return `\x00workflow:${match.workflowName}`;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Get the cheapest/fastest provider for lightweight LLM calls. */
+  private getMatchingProvider(): { model: string; provider: ModelProvider } | null {
+    // Prefer deepseek-v4-flash (cheapest)
+    if (this.adapters.has("deepseek")) {
+      return { model: "deepseek-v4-flash", provider: "deepseek" };
+    }
+    if (this.adapters.has("zhipu")) {
+      return { model: "glm-4.7", provider: "zhipu" };
+    }
+    if (this.adapters.has("mimo")) {
+      return { model: "MiMo-V2.5-Pro", provider: "mimo" };
+    }
+    return null;
+  }
+
+  /** List loaded workflow definitions. */
+  private listLoadedWorkflows(): void {
+    if (this.workflowDefinitions.length === 0) {
+      console.log(style.dim("  No workflows loaded."));
+      return;
+    }
+    console.log();
+    console.log(style.bold("  Available workflows:"));
+    for (const wf of this.workflowDefinitions) {
+      console.log(`    ${style.bold(wf.name)} — ${wf.description} (${wf.steps.length} steps)`);
+    }
+    console.log();
+  }
+
+  /** Run a workflow by its loaded definition. */
+  private async runWorkflowByName(wf: WorkflowDefinition): Promise<void> {
+    const wfConfig = this.config.workflows;
+    const workspaceDir = path.dirname(path.resolve(this.configPath));
+    const stateDir = path.join(workspaceDir, wfConfig?.stateDir ?? ".workflow-state");
+    const budget = this.config.budget.maxYuan;
+
+    console.log();
+    console.log(style.bold(`  Workflow: ${wf.name}`));
+    console.log(style.dim(`  ${wf.description}`));
+    console.log(style.dim(`  Steps: ${wf.steps.length}`));
+    console.log(style.dim(`  Budget: ¥${budget.toFixed(2)}`));
+    console.log();
+
+    const deps = this.buildAgentLoopDeps(workspaceDir, budget, false);
+    const stateStore = new WorkflowStateStore(stateDir);
+    await stateStore.init();
+
+    const engine = new WorkflowEngine({
+      agentLoopDeps: deps,
+      stateStore,
+      onCheckpoint: async (_stepId, message) => {
+        console.log();
+        console.log(style.warning(`  Checkpoint: ${message}`));
+        const readline = await import("node:readline");
+        const rl = readline.createInterface({
+          input: process.stdin,
+          output: process.stdout,
+        });
+        const answer = await new Promise<string>((resolve) => {
+          rl.question("  Approve? [Y/n] ", (ans) => {
+            rl.close();
+            resolve(ans.trim().toLowerCase());
+          });
+        });
+        return answer !== "n" && answer !== "no";
+      },
+      onStepComplete: (stepId, status) => {
+        const icon = status === "completed" ? style.success("✓") : style.error("✗");
+        console.log(`  ${icon} ${stepId} (${status})`);
+      },
+    });
+
+    const run = await engine.run(wf, budget);
+
+    // Show summary
+    console.log();
+    const statusIcon = run.status === "completed"
+      ? style.success("✓")
+      : run.status === "paused"
+        ? style.warning("⏸")
+        : style.error("✗");
+    console.log(`${statusIcon} Workflow ${run.status} · ${run.steps.length} steps · ¥${run.totalCost.toFixed(4)}`);
+  }
+
+  /** Try to run a matched workflow by name. Returns true if handled. */
+  async tryRunMatchedWorkflow(name: string): Promise<boolean> {
+    const wf = this.workflowDefinitions.find((w) => w.name === name);
+    if (!wf) return false;
+    await this.runWorkflowByName(wf);
+    return true;
   }
 
 
@@ -1508,6 +1730,13 @@ program
         return;
       }
       task = await orchestrator.promptTask();
+    }
+
+    // Handle workflow match marker from smart matching
+    if (task.startsWith("\x00workflow:")) {
+      const wfName = task.slice("\x00workflow:".length);
+      const handled = await orchestrator.tryRunMatchedWorkflow(wfName);
+      if (handled) return;
     }
 
     // Interactive mode selection

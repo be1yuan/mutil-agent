@@ -40,7 +40,7 @@ export interface WorkflowStep {
 
 export interface WorkflowDefinition {
   name: string;
-  description?: string;
+  description: string;
   version?: string;
   steps: WorkflowStep[];
   variables?: Record<string, string>;

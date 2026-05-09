@@ -55,6 +55,7 @@ const WorkflowsConfigSchema = z.object({
   dir: z.string().default(".workflows"),
   stateDir: z.string().default(".workflow-state"),
   defaultTimeout: z.number().int().min(1000).default(600_000),
+  autoRecommend: z.boolean().default(true),
 });
 
 const ConfigSchema = z.object({

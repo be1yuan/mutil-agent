@@ -3,7 +3,6 @@
 import { Command } from "commander";
 import path from "node:path";
 import fs from "node:fs";
-import type { Interface as ReadlineInterface } from "node:readline";
 import { loadConfig, loadAgents } from "../config/loader.js";
 import { validateConfig } from "../config/validator.js";
 import { DeepSeekAdapter, GLMAdapter, MiMoAdapter } from "../adapters/anthropic-client.js";
@@ -49,6 +48,7 @@ import { runWorkflowWizard } from "./workflow-wizard.js";
 import { runMeetingWizard } from "./meeting-wizard.js";
 import { runAgentWizard } from "./agent-wizard.js";
 import { t, toggleLocale } from "./i18n.js";
+import { questionWithEsc, ESC } from "./question-with-esc.js";
 import type { ModelAdapter } from "../adapters/types.js";
 import type { AgentDefinition } from "../agent/types.js";
 import type { ModelProvider } from "../types/core.js";
@@ -62,41 +62,6 @@ const MODEL_CATALOG: { model: string; provider: ModelProvider; label: string }[]
   { model: "glm-4.7",            provider: "zhipu",    label: "GLM 4.7 (Zhipu)" },
   { model: "MiMo-V2.5-Pro",      provider: "mimo",     label: "MiMo V2.5 Pro" },
 ];
-
-// ── Orchestrator ──
-
-/** Escape sentinel — returned by questionWithEsc when user presses Escape */
-const ESC = "__ESC__";
-
-/**
- * Wraps readline question with Escape key detection.
- * Returns the user's trimmed answer, or ESC if Escape was pressed.
- */
-function questionWithEsc(rl: ReadlineInterface, prompt: string): Promise<string> {
-  return new Promise<string>((resolve) => {
-    let resolved = false;
-
-    const onKeypress = (_str: string, key: { name?: string }) => {
-      if (key?.name === "escape" && !resolved) {
-        resolved = true;
-        process.stdin.removeListener("keypress", onKeypress);
-        rl.close();
-        resolve(ESC);
-      }
-    };
-
-    process.stdin.on("keypress", onKeypress);
-
-    rl.question(prompt, (ans) => {
-      if (!resolved) {
-        resolved = true;
-        process.stdin.removeListener("keypress", onKeypress);
-        rl.close();
-        resolve(ans.trim());
-      }
-    });
-  });
-}
 
 class Orchestrator {
   private adapters: Map<ModelProvider, ModelAdapter> = new Map();
@@ -389,6 +354,7 @@ class Orchestrator {
       });
 
       const raw = await questionWithEsc(rl, style.bold("  > "));
+      rl.close();
 
       if (raw === ESC || raw === "") {
         return { type: "exit" };
@@ -661,6 +627,7 @@ class Orchestrator {
       });
 
       const answer = await questionWithEsc(rl, "  > ");
+      rl.close();
 
       if (answer === ESC) {
         console.log(style.dim("  Goodbye."));
@@ -1157,6 +1124,7 @@ class Orchestrator {
       });
 
       const raw = await questionWithEsc(rl, style.bold("  > "));
+      rl.close();
 
       if (raw === ESC || raw === "") {
         return { type: "exit" };

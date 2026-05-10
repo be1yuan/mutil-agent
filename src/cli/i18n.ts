@@ -60,7 +60,7 @@ const translations: Record<string, Record<Locale, string>> = {
   // ── Model picker ──
   "model.title": { en: "Models:", zh: "模型:" },
   "model.select": { en: "Select", zh: "选择" },
-  "model.cancel": { en: "Enter to cancel", zh: "按回车取消" },
+  "model.cancel": { en: "Esc to cancel", zh: "Esc 取消" },
   "model.switched": { en: "Switched to", zh: "已切换到" },
 
   // ── Workflow ──
@@ -84,13 +84,13 @@ const translations: Record<string, Record<Locale, string>> = {
   "agent.noAgents": { en: "No agents loaded", zh: "没有已加载的智能体" },
   "agent.notFound": { en: "not found", zh: "未找到" },
   "agent.selectAgent": { en: "Select an agent", zh: "选择一个智能体" },
-  "agent.selectPrompt": { en: "Enter number or name (Enter to cancel):", zh: "输入编号或名称 (回车取消):" },
+  "agent.selectPrompt": { en: "Enter number or name (Esc to cancel):", zh: "输入编号或名称 (Esc 取消):" },
   "agent.actionsFor": { en: "— actions", zh: "— 操作" },
   "agent.action.show": { en: "Show configuration", zh: "查看配置" },
   "agent.action.model": { en: "Change model", zh: "切换模型" },
   "agent.action.edit": { en: "Edit configuration", zh: "编辑配置" },
   "agent.action.back": { en: "Back to list", zh: "返回列表" },
-  "agent.actionPrompt": { en: "Select [1-4] (Enter to exit):", zh: "选择 [1-4] (回车退出):" },
+  "agent.actionPrompt": { en: "Select [1-4] (Esc to exit):", zh: "选择 [1-4] (Esc 退出):" },
   "agent.detail.type": { en: "Type", zh: "类型" },
   "agent.detail.model": { en: "Model", zh: "模型" },
   "agent.detail.desc": { en: "Description", zh: "描述" },
@@ -102,7 +102,7 @@ const translations: Record<string, Record<Locale, string>> = {
   "agent.detail.systemPrompt": { en: "System prompt", zh: "系统提示词" },
   "agent.detail.promptPreview": { en: "(showing first 300 chars)", zh: "(显示前300字符)" },
   "agent.model.select": { en: "Select model for", zh: "为以下智能体选择模型" },
-  "agent.model.prompt": { en: "Enter number (Enter to cancel):", zh: "输入编号 (回车取消):" },
+  "agent.model.prompt": { en: "Enter number (Esc to cancel):", zh: "输入编号 (Esc 取消):" },
   "agent.model.switched": { en: "Model changed to", zh: "模型已切换为" },
   "agent.edit.title": { en: "Editing", zh: "编辑" },
   "agent.edit.hint": { en: "Press Enter to keep current value", zh: "回车保持当前值" },
@@ -209,7 +209,7 @@ const translations: Record<string, Record<Locale, string>> = {
 
   // ── Generic ──
   "generic.yes": { en: "Y/n", zh: "Y/n" },
-  "generic.cancel": { en: "Enter to cancel", zh: "按回车取消" },
+  "generic.cancel": { en: "Esc to cancel", zh: "Esc 取消" },
 };
 
 /** Translate a key to the current locale. Falls back to English. */

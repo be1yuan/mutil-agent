@@ -6,6 +6,7 @@
 import * as readline from "node:readline";
 import { t } from "./i18n.js";
 import { style } from "./ansi.js";
+import { questionWithEsc, ESC } from "./question-with-esc.js";
 import type { AgentDefinition } from "../agent/types.js";
 import type { ModelProvider } from "../types/core.js";
 
@@ -75,8 +76,8 @@ async function selectAgent(
     }
 
     console.log();
-    const raw = await question(rl, `  ${t("agent.selectPrompt")} `);
-    if (!raw) return null;
+    const raw = await questionWithEsc(rl, `  ${t("agent.selectPrompt")} `);
+    if (raw === ESC || !raw) return null;
 
     // Try number first
     const num = parseInt(raw, 10);
@@ -116,7 +117,7 @@ async function actionLoop(
     console.log(`  ${style.bold("3.")} ${t("agent.action.edit")}`);
     console.log(`  ${style.bold("4.")} ${t("agent.action.back")}`);
     console.log();
-    const raw = await question(rl, `  ${t("agent.actionPrompt")} `);
+    const raw = await questionWithEsc(rl, `  ${t("agent.actionPrompt")} `);
 
     if (raw === "1") {
       showAgentDetail(agentName, definition);
@@ -127,7 +128,7 @@ async function actionLoop(
       }
     } else if (raw === "3") {
       await editAgentConfig(rl, agentName, definition);
-    } else if (raw === "4" || raw === "") {
+    } else if (raw === "4" || raw === "" || raw === ESC) {
       return; // back to list
     }
   }
@@ -177,8 +178,8 @@ async function changeModel(
   }
 
   console.log();
-  const raw = await question(rl, `  ${t("agent.model.prompt")} `);
-  if (!raw) return false;
+  const raw = await questionWithEsc(rl, `  ${t("agent.model.prompt")} `);
+  if (raw === ESC || !raw) return false;
 
   const num = parseInt(raw, 10);
   if (!isNaN(num) && num >= 1 && num <= modelCatalog.length) {

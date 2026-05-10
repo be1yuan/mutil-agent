@@ -6,6 +6,7 @@
 import * as readline from "node:readline";
 import { t } from "./i18n.js";
 import { style } from "./ansi.js";
+import { questionWithEsc, ESC } from "./question-with-esc.js";
 import type { AgentDefinition } from "../agent/types.js";
 import type { DebateConfig, ReviewChainConfig } from "../agent/collaboration/types.js";
 import type { AggregationStrategy } from "../agent/committee.js";
@@ -70,7 +71,12 @@ export async function runMeetingWizard(
     console.log(style.dim("──────────────────────────────────────────────"));
     console.log();
 
-    const modeAnswer = await question(rl, `  ${t("meeting.selectMode")} [1-3]: `);
+    const modeAnswer = await questionWithEsc(rl, `  ${t("meeting.selectMode")} [1-3]: `);
+
+    if (modeAnswer === ESC) {
+      console.log(style.warning(`  ${t("meeting.cancelled")}`));
+      return null;
+    }
 
     if (modeAnswer === "1") {
       return promptDebateConfig(rl, agentDefs);
@@ -174,8 +180,8 @@ async function promptDebateConfig(
   console.log(style.dim("  └─────────────────────────────────────────┘"));
   console.log();
 
-  const confirm = await question(rl, `  ${t("meeting.debate.start")} [Y/n]: `);
-  if (confirm.toLowerCase() === "n") {
+  const confirm = await questionWithEsc(rl, `  ${t("meeting.debate.start")} [Y/n]: `);
+  if (confirm === ESC || confirm.toLowerCase() === "n") {
     console.log(style.warning(`  ${t("meeting.cancelled")}`));
     return null;
   }
@@ -247,8 +253,8 @@ async function promptReviewChainConfig(
   console.log(style.dim("  └─────────────────────────────────────────┘"));
   console.log();
 
-  const confirm = await question(rl, `  ${t("meeting.reviewChain.start")} [Y/n]: `);
-  if (confirm.toLowerCase() === "n") {
+  const confirm = await questionWithEsc(rl, `  ${t("meeting.reviewChain.start")} [Y/n]: `);
+  if (confirm === ESC || confirm.toLowerCase() === "n") {
     console.log(style.warning(`  ${t("meeting.cancelled")}`));
     return null;
   }
@@ -351,8 +357,8 @@ async function promptCommitteeConfig(
   console.log(style.dim("  └─────────────────────────────────────────┘"));
   console.log();
 
-  const confirm = await question(rl, `  ${t("meeting.committee.start")} [Y/n]: `);
-  if (confirm.toLowerCase() === "n") {
+  const confirm = await questionWithEsc(rl, `  ${t("meeting.committee.start")} [Y/n]: `);
+  if (confirm === ESC || confirm.toLowerCase() === "n") {
     console.log(style.warning(`  ${t("meeting.cancelled")}`));
     return null;
   }

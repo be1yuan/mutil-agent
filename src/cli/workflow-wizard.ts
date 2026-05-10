@@ -10,6 +10,7 @@ import path from "node:path";
 import YAML from "yaml";
 import { style } from "./ansi.js";
 import { t } from "./i18n.js";
+import { questionWithEsc, ESC } from "./question-with-esc.js";
 import type { WorkflowDefinition, WorkflowStep, StepType } from "../workflow/types.js";
 import type { AgentDefinition } from "../agent/types.js";
 import type { ModelProvider } from "../types/core.js";
@@ -265,8 +266,11 @@ async function promptModelOverride(
     console.log(`  ${marker} [${i + 1}] ${m.label}  ${style.dim(m.model)}`);
   }
 
-  const choice = await prompt(`  ${t("model.select")} [1-${modelCatalog.length}, ${t("model.cancel")}]: `);
-  if (!choice) return null;
+  const readline = await import("node:readline");
+  const mrl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  const choice = await questionWithEsc(mrl, `  ${t("model.select")} [1-${modelCatalog.length}, ${t("model.cancel")}]: `);
+  mrl.close();
+  if (choice === ESC || !choice) return null;
   const idx = parseInt(choice, 10) - 1;
   if (idx >= 0 && idx < modelCatalog.length) {
     return modelCatalog[idx];

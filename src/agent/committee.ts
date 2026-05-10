@@ -27,7 +27,7 @@ const MEMBER_COLORS = [
 
 // ── Types ──
 
-export type AggregationStrategy = "majority" | "concat" | "best";
+export type AggregationStrategy = "majority" | "concat" | "best" | "weighted-majority" | "weighted-best";
 
 export interface CommitteeConfig {
   /** Agent types to run in parallel */
@@ -36,6 +36,8 @@ export interface CommitteeConfig {
   strategy?: AggregationStrategy;
   /** Maximum number of agents to run concurrently (default: agentTypes.length) */
   maxConcurrency?: number;
+  /** Per-agent weights for weighted-vote strategies (defaults to 1.0) */
+  weights?: Record<string, number>;
 }
 
 export interface CommitteeMemberResult {
@@ -123,7 +125,7 @@ export class Committee {
     }
 
     // Aggregate results
-    const aggregated = this.aggregate(memberResults, strategy);
+    const aggregated = this.aggregate(memberResults, strategy, config.weights);
     const totalCost = memberResults.reduce((s, m) => s + m.result.cost, 0);
     const totalSteps = memberResults.reduce((s, m) => s + m.result.steps, 0);
 
@@ -145,7 +147,8 @@ export class Committee {
 
   private aggregate(
     results: CommitteeMemberResult[],
-    strategy: AggregationStrategy
+    strategy: AggregationStrategy,
+    weights?: Record<string, number>
   ): { status: CommitteeResult["status"]; content?: string } {
     if (results.length === 0) {
       return { status: "error" };
@@ -194,6 +197,38 @@ export class Committee {
         return {
           status: best ? "success" : "error",
           content: best?.result.content,
+        };
+      }
+
+      case "weighted-majority": {
+        const w = weights ?? {};
+        let weightedSum = 0;
+        let totalWeight = 0;
+        for (const m of results) {
+          const weight = w[m.agentType] ?? 1.0;
+          totalWeight += weight;
+          if (m.result.status === "success") weightedSum += weight;
+        }
+        const sorted = [...successes].sort(
+          (a, b) => (w[b.agentType] ?? 1.0) - (w[a.agentType] ?? 1.0)
+        );
+        return {
+          status: weightedSum >= totalWeight / 2 ? "success" : hasPartial ? "partial" : "error",
+          content: sorted[0]?.result.content ?? results[0].result.content,
+        };
+      }
+
+      case "weighted-best": {
+        const w = weights ?? {};
+        const scored = successes.map((m) => ({
+          member: m,
+          score: (m.result.content?.length ?? 0) * (w[m.agentType] ?? 1.0),
+        }));
+        scored.sort((a, b) => b.score - a.score);
+        const best = scored[0];
+        return {
+          status: best ? "success" : "error",
+          content: best?.member.result.content,
         };
       }
 

@@ -296,6 +296,7 @@ export class ApiServer {
         const record = this.taskManager!.submit(request);
         this.json(res, 201, {
           id: record.id,
+          mode: record.mode,
           status: record.status,
           agentType: record.agentType,
           budget: record.budget,

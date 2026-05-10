@@ -63,6 +63,23 @@ workflows:
   stateDir: .workflow-state    # Run state persistence directory
   defaultTimeout: 600000       # Default per-step timeout (10 minutes)
 
+# Debate mode defaults
+debate:
+  defaultJudgeAgent: "judge"
+  defaultRounds: 2
+  scoringEnabled: true
+  defaultParticipants:
+    - explore
+    - architect
+  defaultModerator: ""
+
+# Review Chain mode defaults
+reviewChain:
+  defaultCoder: "coder"
+  defaultReviewer: "reviewer"
+  defaultMaxIterations: 3
+  defaultAcceptThreshold: "auto"
+
 # Agent memory system configuration
 memory:
   enabled: true                # Enable cross-task memory

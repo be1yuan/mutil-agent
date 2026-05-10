@@ -133,7 +133,6 @@ describe("fuzzyMatchCommand", () => {
   it("returns undefined for exact match (no hint needed)", () => {
     expect(fuzzyMatchCommand("/model")).toBeUndefined();
     expect(fuzzyMatchCommand("/workflow")).toBeUndefined();
-    expect(fuzzyMatchCommand("/exit")).toBeUndefined();
   });
 
   it("returns undefined for non-slash input", () => {
@@ -154,7 +153,6 @@ describe("fuzzyMatchCommand", () => {
 
   it("matches by edit distance for typos", () => {
     expect(fuzzyMatchCommand("/modle")).toBe("/model");     // 1 swap
-    expect(fuzzyMatchCommand("/exti")).toBe("/exit");       // 1 swap
     expect(fuzzyMatchCommand("/worfklow")).toBe("/workflow"); // 1 transposition
   });
 

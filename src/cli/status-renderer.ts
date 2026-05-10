@@ -14,6 +14,7 @@ import {
 } from "./ansi.js";
 import type { AgentResult } from "../types/core.js";
 import type { SubAgentResult } from "../adapters/types.js";
+import type { DebateResult, ReviewChainResult } from "../agent/collaboration/types.js";
 
 // ── Startup banner ──
 
@@ -165,6 +166,88 @@ export function renderCommitteeResult(result: CommitteeRenderResult): string {
   lines.push(
     `Total cost: ¥${result.totalCost.toFixed(4)} │ Total steps: ${result.totalSteps}`
   );
+
+  return banner(lines);
+}
+
+// ── Debate result ──
+
+export function renderDebateResult(result: DebateResult): string {
+  const statusIcon = result.status === "success" ? symbols.ok : result.status === "error" ? symbols.fail : symbols.warn;
+  const statusColor = result.status === "success" ? style.success : result.status === "error" ? style.error : style.warning;
+
+  const lines: string[] = [
+    style.bold(`Debate │ ${statusIcon} ${statusColor(result.status.toUpperCase())} │ Rounds: ${result.rounds.length} │ Cost: ¥${result.totalCost.toFixed(4)}`),
+    "",
+  ];
+
+  for (const round of result.rounds) {
+    const hasScores = round.scores && round.scores.length > 0;
+    const roundLabel = hasScores ? `Round ${round.round} (scored)` : `Round ${round.round}`;
+    lines.push(style.bold(`  ${symbols.stepSub} ${roundLabel}:`));
+
+    for (const resp of round.responses) {
+      const preview = truncate(resp.content.replace(/\s+/g, " "), 80);
+      lines.push(`  ${symbols.stepLast} ${style.info(resp.agentType)}: ${style.dim(preview)}`);
+    }
+
+    if (round.scores && round.scores.length > 0) {
+      lines.push(`  ${style.dim("  Scores:")}`);
+      for (const s of round.scores) {
+        const dims = `rel:${s.dimensions.relevance} dep:${s.dimensions.depth} nov:${s.dimensions.novelty} clr:${s.dimensions.clarity}${s.dimensions.critique !== undefined ? ` cri:${s.dimensions.critique}` : ""}`;
+        lines.push(`  ${symbols.stepLast} ${style.info(s.agentType)}: ${s.totalScore}/100 ${style.dim(`(${dims})`)} ${style.dim(s.comment)}`);
+      }
+    }
+
+    lines.push("");
+  }
+
+  if (result.moderatorResult) {
+    const modPreview = truncate(result.moderatorResult.content.replace(/\s+/g, " "), 80);
+    lines.push(style.bold(`  ${symbols.stepSub} Moderator (${result.moderatorResult.agentType}):`));
+    lines.push(`  ${symbols.stepLast} ${style.dim(modPreview)}`);
+    lines.push("");
+  }
+
+  lines.push(`Total cost: ¥${result.totalCost.toFixed(4)} │ Total steps: ${result.totalSteps}`);
+
+  return banner(lines);
+}
+
+// ── Review Chain result ──
+
+export function renderReviewChainResult(result: ReviewChainResult): string {
+  const statusIcon = result.status === "success" ? symbols.ok : result.status === "error" ? symbols.fail : symbols.warn;
+  const statusColor = result.status === "success" ? style.success : result.status === "error" ? style.error : style.warning;
+
+  const headerStatus = result.status === "max_iterations_reached" ? "MAX ITERATIONS" : result.status.toUpperCase();
+  const lines: string[] = [
+    style.bold(`Review Chain │ ${statusIcon} ${statusColor(headerStatus)} │ Iterations: ${result.iterations.length} │ Cost: ¥${result.totalCost.toFixed(4)}`),
+    "",
+  ];
+
+  for (const it of result.iterations) {
+    const acceptedLabel = it.accepted ? style.success(" ✓ ACCEPTED") : "";
+    lines.push(style.bold(`  ${symbols.stepSub} Iteration ${it.iteration}${acceptedLabel}:`));
+
+    // Coder output
+    const coderPreview = truncate(it.coderResult.content.replace(/\s+/g, " "), 80);
+    lines.push(`  ${symbols.stepSub} ${style.info("coder")}: ${style.dim(coderPreview)}`);
+
+    // Reviewer verdict
+    if (it.reviewerResult) {
+      const verdictStr = it.reviewerResult.verdict.type === "NEEDS_CHANGES"
+        ? `NEEDS_CHANGES: ${truncate(it.reviewerResult.verdict.feedback, 60)}`
+        : it.reviewerResult.verdict.type;
+      const verdictColor = it.reviewerResult.verdict.type === "LGTM" || it.reviewerResult.verdict.type === "APPROVED"
+        ? style.success : style.warning;
+      lines.push(`  ${symbols.stepLast} ${style.info("reviewer")}: ${verdictColor(verdictStr)}`);
+    }
+
+    lines.push("");
+  }
+
+  lines.push(`Total cost: ¥${result.totalCost.toFixed(4)} │ Total steps: ${result.totalSteps}`);
 
   return banner(lines);
 }

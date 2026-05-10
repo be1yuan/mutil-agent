@@ -3,6 +3,7 @@
 import { Command } from "commander";
 import path from "node:path";
 import fs from "node:fs";
+import type { Interface as ReadlineInterface } from "node:readline";
 import { loadConfig, loadAgents } from "../config/loader.js";
 import { validateConfig } from "../config/validator.js";
 import { DeepSeekAdapter, GLMAdapter, MiMoAdapter } from "../adapters/anthropic-client.js";
@@ -13,6 +14,8 @@ import { PermissionResolver } from "../security/permission-resolver.js";
 import { CostTracker } from "../observability/cost-tracker.js";
 import { ConcurrencyLimiter } from "../agent/concurrency-limiter.js";
 import { Committee, type AggregationStrategy } from "../agent/committee.js";
+import { Debate } from "../agent/collaboration/debate.js";
+import { ReviewChain } from "../agent/collaboration/review-chain.js";
 import { pruneStaleWorktrees } from "../agent/worktree-manager.js";
 import { isCheerioAvailable } from "../agent/web-tools.js";
 import { Mailbox } from "../agent/mailbox.js";
@@ -31,7 +34,7 @@ import {
   renderCommitteeResult,
 } from "./status-renderer.js";
 import { initProject } from "./init.js";
-import { summarizeToolArgs, style } from "./ansi.js";
+import { summarizeToolArgs, style, symbols } from "./ansi.js";
 import { DashboardEventBridge } from "./dashboard/event-bridge.js";
 import {
   WorkflowEngine,
@@ -43,6 +46,8 @@ import {
 import { matchWorkflow } from "../agent/workflow-matcher.js";
 import { handleCommand, findWorkflowByName, fuzzyMatchCommand } from "./repl-commands.js";
 import { runWorkflowWizard } from "./workflow-wizard.js";
+import { runMeetingWizard } from "./meeting-wizard.js";
+import { runAgentWizard } from "./agent-wizard.js";
 import { t, toggleLocale } from "./i18n.js";
 import type { ModelAdapter } from "../adapters/types.js";
 import type { AgentDefinition } from "../agent/types.js";
@@ -59,6 +64,39 @@ const MODEL_CATALOG: { model: string; provider: ModelProvider; label: string }[]
 ];
 
 // ── Orchestrator ──
+
+/** Escape sentinel — returned by questionWithEsc when user presses Escape */
+const ESC = "__ESC__";
+
+/**
+ * Wraps readline question with Escape key detection.
+ * Returns the user's trimmed answer, or ESC if Escape was pressed.
+ */
+function questionWithEsc(rl: ReadlineInterface, prompt: string): Promise<string> {
+  return new Promise<string>((resolve) => {
+    let resolved = false;
+
+    const onKeypress = (_str: string, key: { name?: string }) => {
+      if (key?.name === "escape" && !resolved) {
+        resolved = true;
+        process.stdin.removeListener("keypress", onKeypress);
+        rl.close();
+        resolve(ESC);
+      }
+    };
+
+    process.stdin.on("keypress", onKeypress);
+
+    rl.question(prompt, (ans) => {
+      if (!resolved) {
+        resolved = true;
+        process.stdin.removeListener("keypress", onKeypress);
+        rl.close();
+        resolve(ans.trim());
+      }
+    });
+  });
+}
 
 class Orchestrator {
   private adapters: Map<ModelProvider, ModelAdapter> = new Map();
@@ -307,7 +345,7 @@ class Orchestrator {
         console.log(`\nContent:\n${result.content}`);
       }
 
-      // ── Post-task prompt (inner loop: /save re-prompts, /exit quits) ──
+      // ── Post-task prompt (inner loop: /save re-prompts, Esc quits) ──
       while (true) {
         const action = await this.promptPostTaskAction(result, definition, workspaceDir, quiet);
         if (action.type === "exit") {
@@ -331,7 +369,7 @@ class Orchestrator {
     }
   }
 
-  /** Claude Code-style prompt: type to continue, /save to save, /model to switch, /exit to quit */
+  /** Claude Code-style prompt: type to continue, /save to save, /model to switch, Esc to quit */
   private async promptPostTaskAction(
     result: import("../types/core.js").AgentResult,
     definition: AgentDefinition,
@@ -343,24 +381,20 @@ class Orchestrator {
     const currentModel = style.dim(`[${definition.model}]`);
 
     while (true) {
-      console.log(`  ${icon} ${result.status} · ${result.steps} steps · ¥${result.cost.toFixed(4)} · ${currentModel} · /save /model /exit`);
+      console.log(`  ${icon} ${result.status} · ${result.steps} steps · ¥${result.cost.toFixed(4)} · ${currentModel} · /save /model`);
 
       const rl = readline.createInterface({
         input: process.stdin,
         output: process.stdout,
       });
 
-      const raw = await new Promise<string>((resolve) => {
-        rl.question(style.bold("  > "), (ans) => {
-          rl.close();
-          resolve(ans.trim());
-        });
-      });
-      const answer = raw.toLowerCase();
+      const raw = await questionWithEsc(rl, style.bold("  > "));
 
-      if (answer === "/exit" || answer === "/q" || answer === "") {
+      if (raw === ESC || raw === "") {
         return { type: "exit" };
       }
+
+      const answer = raw.toLowerCase();
 
       if (answer === "/save" || answer === "/s") {
         try {
@@ -384,7 +418,7 @@ class Orchestrator {
         console.log(style.bold(`  ${t("help.title")}`));
         console.log(style.dim(`  /save   ${t("help.save")}`));
         console.log(style.dim(`  /model  ${t("help.model")}`));
-        console.log(style.dim(`  /exit   ${t("help.exit")}`));
+        console.log(style.dim(`  Esc     ${t("help.exit")}`));
         console.log();
         continue;
       }
@@ -611,7 +645,7 @@ class Orchestrator {
   }
 
   /** Interactively prompt for a task description (no subcommand mode).
-   *  Slash commands (/model, /exit, /workflow, /agent) are handled inline and re-prompt. */
+   *  Slash commands (/model, /workflow, /agent) are handled inline and re-prompt. */
   async promptTask(): Promise<string> {
     const readline = await import("node:readline");
     console.log();
@@ -626,20 +660,14 @@ class Orchestrator {
         output: process.stdout,
       });
 
-      const answer = await new Promise<string>((resolve) => {
-        rl.question("  > ", (ans) => {
-          rl.close();
-          resolve(ans.trim());
-        });
-      });
+      const answer = await questionWithEsc(rl, "  > ");
 
-      const trimmed = answer.trim();
-      const lower = trimmed.toLowerCase();
-
-      if (lower === "/exit" || lower === "/q") {
+      if (answer === ESC) {
         console.log(style.dim("  Goodbye."));
         process.exit(0);
       }
+
+      const lower = answer.toLowerCase();
 
       if (lower === "/model" || lower === "/models") {
         const def = this.agentDefinitions.get("main");
@@ -654,10 +682,11 @@ class Orchestrator {
         console.log();
         console.log(style.bold(`  ${t("help.title")}`));
         console.log(style.dim(`  /model       ${t("help.model")}`));
+        console.log(style.dim(`  /meeting     ${t("help.meeting")}`));
         console.log(style.dim(`  /workflow    ${t("help.workflow")}`));
         console.log(style.dim(`  /agent       ${t("help.agent")}`));
         console.log(style.dim(`  /language    ${t("help.language")}`));
-        console.log(style.dim(`  /exit        ${t("help.exit")}`));
+        console.log(style.dim(`  Esc          ${t("help.exit")}`));
         console.log();
         continue;
       }
@@ -669,9 +698,19 @@ class Orchestrator {
         continue;
       }
 
-      // Handle /workflow and /agent commands
-      if (lower.startsWith("/workflow") || lower.startsWith("/wf") || lower.startsWith("/agent")) {
-        const cmdResult = await handleCommand(trimmed, {
+      if (lower === "/meeting" || lower === "/mt") {
+        await this.runMeetingWizard();
+        continue;
+      }
+
+      if (lower === "/agent") {
+        await this.agentWizard();
+        continue;
+      }
+
+      // Handle /workflow commands
+      if (lower.startsWith("/workflow") || lower.startsWith("/wf")) {
+        const cmdResult = await handleCommand(answer, {
           workflows: this.workflowDefinitions,
           agents: this.agentDefinitions,
           onRunWorkflow: async (name: string) => {
@@ -714,7 +753,7 @@ class Orchestrator {
         continue;
       }
 
-      if (!trimmed) {
+      if (!answer) {
         console.error(style.error(`  ${t("cmd.taskEmpty")}`));
         console.log();
         continue;
@@ -723,13 +762,13 @@ class Orchestrator {
       // Smart workflow matching
       const wfConfig = this.config.workflows;
       if (wfConfig?.autoRecommend !== false && this.workflowDefinitions.length > 0) {
-        const match = await this.tryWorkflowMatch(trimmed);
+        const match = await this.tryWorkflowMatch(answer);
         if (match) {
           return match; // user accepted — will be handled as workflow run
         }
       }
 
-      return trimmed;
+      return answer;
     }
   }
 
@@ -1000,6 +1039,108 @@ class Orchestrator {
     // Only "save" and "exit" — committee doesn't support continuation
   }
 
+  /** /meeting wizard — guided setup for debate, review chain, or committee */
+  private async runMeetingWizard(): Promise<void> {
+    const meetingResult = await runMeetingWizard(this.agentDefinitions);
+    if (!meetingResult) return;
+
+    const budget = this.config.budget.maxYuan;
+
+    if (meetingResult.mode === "debate" && meetingResult.debateConfig) {
+      await this.debate(meetingResult.task, meetingResult.debateConfig, budget);
+    } else if (meetingResult.mode === "review-chain" && meetingResult.reviewChainConfig) {
+      await this.reviewChain(meetingResult.task, meetingResult.reviewChainConfig, budget);
+    } else if (meetingResult.mode === "committee" && meetingResult.committeeConfig) {
+      await this.committee(meetingResult.task, {
+        agents: meetingResult.committeeConfig.agentTypes.join(","),
+        strategy: meetingResult.committeeConfig.strategy,
+        budget,
+      });
+    }
+  }
+
+  /** /agent wizard — interactive agent management */
+  private async agentWizard(): Promise<void> {
+    await runAgentWizard(this.agentDefinitions, MODEL_CATALOG);
+  }
+
+  /** Debate mode — multi-agent multi-round debate */
+  async debate(
+    task: string,
+    debateConfig: import("../agent/collaboration/types.js").DebateConfig,
+    budget: number
+  ): Promise<void> {
+    const workspaceDir = path.dirname(path.resolve(this.configPath));
+    const nativeSearch = Object.values(this.config.providers).some((p) => p.nativeSearch === true);
+
+    const deps = this.buildAgentLoopDeps(workspaceDir, budget, false);
+
+    const debate = new Debate(deps);
+    const result = await debate.run(task, debateConfig, budget);
+
+    console.log();
+    for (const round of result.rounds) {
+      console.log(style.bold(`  ── Round ${round.round} ──`));
+      for (const resp of round.responses) {
+        console.log(style.dim(`  [${resp.agentType}] ${resp.content.slice(0, 200)}...`));
+      }
+      if (round.scores && round.scores.length > 0) {
+        console.log(style.dim("  ── Scores ──"));
+        for (const s of round.scores) {
+          const bar = "█".repeat(Math.round(s.totalScore / 5)) + "░".repeat(20 - Math.round(s.totalScore / 5));
+          console.log(`  ${style.bold(s.agentType.padEnd(12))} ${s.totalScore}分 ${bar}`);
+          console.log(`  ${style.dim(`    相关性:${s.dimensions.relevance} 深度:${s.dimensions.depth} 新颖度:${s.dimensions.novelty} 清晰度:${s.dimensions.clarity}`)}`);
+          console.log(style.dim(`     💬 ${s.comment}`));
+        }
+      }
+    }
+
+    if (result.moderatorResult) {
+      console.log();
+      console.log(style.bold(`  ── Moderator [${result.moderatorResult.agentType}] ──`));
+      console.log(result.moderatorResult.content);
+    }
+
+    const icon = result.status === "success" ? style.success(symbols.ok) : style.error(symbols.fail);
+    console.log(`\n  ${icon} ${result.status} · ¥${result.totalCost.toFixed(4)}`);
+
+    await this.promptCommitteePostTaskAction(result.content, workspaceDir);
+  }
+
+  /** Review Chain — coder + reviewer iterative improvement */
+  async reviewChain(
+    task: string,
+    reviewConfig: import("../agent/collaboration/types.js").ReviewChainConfig,
+    budget: number
+  ): Promise<void> {
+    const workspaceDir = path.dirname(path.resolve(this.configPath));
+
+    const deps = this.buildAgentLoopDeps(workspaceDir, budget, false);
+
+    const chain = new ReviewChain(deps);
+    const result = await chain.run(task, reviewConfig, budget);
+
+    console.log();
+    for (const iter of result.iterations) {
+      const verdictIcon = iter.accepted ? style.success("✓") : style.error("✗");
+      console.log(`  ${style.bold(`Iteration ${iter.iteration}`)} ${verdictIcon}`);
+      if (iter.reviewerResult) {
+        const verdict = iter.reviewerResult.verdict;
+        if (verdict.type === "LGTM" || verdict.type === "APPROVED") {
+          console.log(style.success(`    Review: ${verdict.type}`));
+        } else {
+          const fb = verdict.type === "NEEDS_CHANGES" ? verdict.feedback : "";
+          console.log(style.warning(`    Review: NEEDS_CHANGES — ${fb.slice(0, 100)}`));
+        }
+      }
+    }
+
+    const icon = result.status === "success" ? style.success(symbols.ok) : style.error(symbols.fail);
+    console.log(`\n  ${icon} ${result.status} · ¥${result.totalCost.toFixed(4)}`);
+
+    await this.promptCommitteePostTaskAction(result.content, workspaceDir);
+  }
+
   /** Claude Code-style prompt for committee (no continue — committee is one-shot) */
   private async promptCommitteePostTaskAction(
     content: string | undefined,
@@ -1008,23 +1149,20 @@ class Orchestrator {
     const readline = await import("node:readline");
 
     while (true) {
-      console.log(style.dim("  /save to save  /exit to quit"));
+      console.log(style.dim("  /save to save · Esc to quit"));
 
       const rl = readline.createInterface({
         input: process.stdin,
         output: process.stdout,
       });
 
-      const answer = await new Promise<string>((resolve) => {
-        rl.question(style.bold("  > "), (ans) => {
-          rl.close();
-          resolve(ans.trim().toLowerCase());
-        });
-      });
+      const raw = await questionWithEsc(rl, style.bold("  > "));
 
-      if (answer === "/exit" || answer === "/q" || answer === "") {
+      if (raw === ESC || raw === "") {
         return { type: "exit" };
       }
+
+      const answer = raw.toLowerCase();
 
       if (answer === "/save" || answer === "/s") {
         try {
@@ -1042,7 +1180,7 @@ class Orchestrator {
         console.log();
         console.log(style.bold(`  ${t("help.title")}`));
         console.log(style.dim(`  /save  ${t("help.save")}`));
-        console.log(style.dim(`  /exit  ${t("help.exit")}`));
+        console.log(style.dim(`  Esc    ${t("help.exit")}`));
         console.log();
         continue;
       }

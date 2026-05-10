@@ -18,8 +18,6 @@ export const KNOWN_COMMANDS = [
   "/save",
   "/help",
   "/h",
-  "/exit",
-  "/q",
 ];
 
 /**

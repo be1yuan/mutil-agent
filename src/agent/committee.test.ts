@@ -119,4 +119,93 @@ describe("Committee", () => {
 
     expect(aggregated.status).toBe("partial");
   });
+
+  // ── Weighted strategy tests ──
+
+  it("weighted-majority: picks success when enough weighted votes", async () => {
+    const committee = new Committee(createMockDeps());
+
+    const memberResults = [
+      { agentType: "explore", result: { status: "success", content: "A", steps: 1, cost: 0.01 } as AgentResult },
+      { agentType: "coder", result: { status: "error", error: "failed", steps: 2, cost: 0.02 } as AgentResult },
+      { agentType: "reviewer", result: { status: "error", error: "failed", steps: 1, cost: 0.01 } as AgentResult },
+    ];
+
+    // explore has weight 3, coder has 1, reviewer has 1 → weighted sum 3/5 >= 50%
+    const aggregated = (committee as any).aggregate(memberResults, "weighted-majority", {
+      explore: 3.0,
+      coder: 1.0,
+      reviewer: 1.0,
+    });
+
+    expect(aggregated.status).toBe("success");
+    expect(aggregated.content).toBe("A");
+  });
+
+  it("weighted-majority: returns partial when weighted sum below half", async () => {
+    const committee = new Committee(createMockDeps());
+
+    const memberResults = [
+      { agentType: "explore", result: { status: "success", content: "A", steps: 1, cost: 0.01 } as AgentResult },
+      { agentType: "coder", result: { status: "error", error: "failed", steps: 2, cost: 0.02 } as AgentResult },
+      { agentType: "reviewer", result: { status: "error", error: "failed", steps: 1, cost: 0.01 } as AgentResult },
+    ];
+
+    // explore has weight 1, others 3 each → weighted sum 1/7 < 50%
+    const aggregated = (committee as any).aggregate(memberResults, "weighted-majority", {
+      explore: 1.0,
+      coder: 3.0,
+      reviewer: 3.0,
+    });
+
+    expect(aggregated.status).toBe("partial");
+  });
+
+  it("weighted-majority: defaults to weight 1.0 for unspecified agents", async () => {
+    const committee = new Committee(createMockDeps());
+
+    const memberResults = [
+      { agentType: "explore", result: { status: "success", content: "A", steps: 1, cost: 0.01 } as AgentResult },
+      { agentType: "coder", result: { status: "success", content: "B", steps: 1, cost: 0.01 } as AgentResult },
+    ];
+
+    // No weights provided, defaults to 1.0 each → 2/2 >= 50% → success
+    const aggregated = (committee as any).aggregate(memberResults, "weighted-majority");
+
+    expect(aggregated.status).toBe("success");
+  });
+
+  it("weighted-best: picks highest weight×length product", async () => {
+    const committee = new Committee(createMockDeps());
+
+    const memberResults = [
+      { agentType: "explore", result: { status: "success", content: "This is a very long and detailed exploration result", steps: 5, cost: 0.05 } as AgentResult },
+      { agentType: "reviewer", result: { status: "success", content: "Short", steps: 1, cost: 0.01 } as AgentResult },
+    ];
+
+    // reviewer has huge weight → reviewer's "Short" (5*10=50) > explore (52*1=52) → actually explore wins still
+    // Let me adjust: reviewer weight 20 → "Short".length*20 = 100 > 52
+    const aggregated = (committee as any).aggregate(memberResults, "weighted-best", {
+      explore: 1.0,
+      reviewer: 20.0,
+    });
+
+    expect(aggregated.status).toBe("success");
+    expect(aggregated.content).toBe("Short");
+  });
+
+  it("weighted-best: defaults to weight 1.0 for unspecified agents", async () => {
+    const committee = new Committee(createMockDeps());
+
+    const memberResults = [
+      { agentType: "explore", result: { status: "success", content: "Short", steps: 1, cost: 0.01 } as AgentResult },
+      { agentType: "coder", result: { status: "success", content: "A much longer response from coder", steps: 3, cost: 0.03 } as AgentResult },
+    ];
+
+    // No weights → coder wins by length
+    const aggregated = (committee as any).aggregate(memberResults, "weighted-best");
+
+    expect(aggregated.status).toBe("success");
+    expect(aggregated.content).toBe("A much longer response from coder");
+  });
 });

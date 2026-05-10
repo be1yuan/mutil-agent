@@ -67,6 +67,21 @@ const MemoryConfigSchema = z.object({
   autoSummarize: z.boolean().default(true),
 });
 
+const DebateGlobalConfigSchema = z.object({
+  defaultJudgeAgent: z.string().default("judge"),
+  defaultRounds: z.number().int().min(1).max(10).default(2),
+  scoringEnabled: z.boolean().default(true),
+  defaultParticipants: z.array(z.string()).default(["explore", "architect"]),
+  defaultModerator: z.string().default(""),
+});
+
+const ReviewChainGlobalConfigSchema = z.object({
+  defaultCoder: z.string().default("coder"),
+  defaultReviewer: z.string().default("reviewer"),
+  defaultMaxIterations: z.number().int().min(1).max(20).default(3),
+  defaultAcceptThreshold: z.enum(["auto", "manual"]).default("auto"),
+});
+
 const ConfigSchema = z.object({
   providers: z.record(z.enum(["deepseek", "zhipu", "mimo"]), ProviderConfigSchema).refine(
     (p) => Object.keys(p).length >= 1,
@@ -80,6 +95,8 @@ const ConfigSchema = z.object({
   api: ApiConfigSchema.default({}).optional(),
   workflows: WorkflowsConfigSchema.default({}).optional(),
   memory: MemoryConfigSchema.default({}).optional(),
+  debate: DebateGlobalConfigSchema.default({}).optional(),
+  reviewChain: ReviewChainGlobalConfigSchema.default({}).optional(),
 });
 
 // ── Validation ──

@@ -79,6 +79,30 @@ export interface MemoryConfig {
   autoSummarize: boolean;
 }
 
+export interface DebateGlobalConfig {
+  /** Default judge agent type (default: "judge") */
+  defaultJudgeAgent: string;
+  /** Default number of debate rounds (default: 2) */
+  defaultRounds: number;
+  /** Enable judge scoring by default (default: true) */
+  scoringEnabled: boolean;
+  /** Default participants (default: ["explore", "architect"]) */
+  defaultParticipants: string[];
+  /** Default moderator agent type (default: "" = none) */
+  defaultModerator: string;
+}
+
+export interface ReviewChainGlobalConfig {
+  /** Default coder agent type (default: "coder") */
+  defaultCoder: string;
+  /** Default reviewer agent type (default: "reviewer") */
+  defaultReviewer: string;
+  /** Default max iterations (default: 3) */
+  defaultMaxIterations: number;
+  /** Default acceptance mode (default: "auto") */
+  defaultAcceptThreshold: "auto" | "manual";
+}
+
 export interface OrchestratorConfig {
   providers: Record<ModelProvider, ProviderConfig>;
   fallback: FallbackConfig;
@@ -89,6 +113,8 @@ export interface OrchestratorConfig {
   api?: ApiConfig;
   workflows?: WorkflowsConfig;
   memory?: MemoryConfig;
+  debate?: DebateGlobalConfig;
+  reviewChain?: ReviewChainGlobalConfig;
 }
 
 /** Default config values */
@@ -134,5 +160,18 @@ export const DEFAULT_CONFIG: Partial<OrchestratorConfig> = {
     longTermMaxEntries: 500,
     summarizationThreshold: 8000,
     autoSummarize: true,
+  },
+  debate: {
+    defaultJudgeAgent: "judge",
+    defaultRounds: 2,
+    scoringEnabled: true,
+    defaultParticipants: ["explore", "architect"],
+    defaultModerator: "",
+  },
+  reviewChain: {
+    defaultCoder: "coder",
+    defaultReviewer: "reviewer",
+    defaultMaxIterations: 3,
+    defaultAcceptThreshold: "auto",
   },
 };

@@ -130,17 +130,27 @@ export class AgentLoop {
         };
       }
 
-      // Apply stream prefix if provided (used by committee for color coding)
+      // Apply stream prefix if provided (used by committee for color coding).
+      // Only prefix the FIRST text delta — OpenAI APIs stream tiny chunks
+      // (single words/characters), so prefixing every chunk pollutes output.
       const streamHandler = this.deps.onStreamText
         ? this.deps.getStreamPrefix
-          ? (text: string) => {
-              const prefix = this.deps.getStreamPrefix!(definition.agentType);
-              const prefixed = text
-                .split("\n")
-                .map((line, i) => (i === 0 ? prefix + line : " ".repeat(10) + line))
-                .join("\n");
-              this.deps.onStreamText!(prefixed);
-            }
+          ? (() => {
+              let prefixEmitted = false;
+              return (text: string) => {
+                if (!prefixEmitted) {
+                  prefixEmitted = true;
+                  const prefix = this.deps.getStreamPrefix!(definition.agentType);
+                  const prefixed = text
+                    .split("\n")
+                    .map((line, i) => (i === 0 ? prefix + line : " ".repeat(10) + line))
+                    .join("\n");
+                  this.deps.onStreamText!(prefixed);
+                } else {
+                  this.deps.onStreamText!(text);
+                }
+              };
+            })()
           : this.deps.onStreamText
         : undefined;
 
@@ -153,11 +163,8 @@ export class AgentLoop {
         stream: !!streamHandler,
         onTextDelta: streamHandler,
         onRetry: (attempt: number, error: Error) => {
-          // When a retry occurs during streaming, emit a visible marker
-          // so the user knows subsequent output is from a new attempt,
-          // not a continuation of the previous (possibly corrupted) stream.
-          if (streamHandler) {
-            streamHandler(`\n[retry attempt ${attempt}: ${error.message.slice(0, 80)}]\n`);
+          if (this.deps.onStreamText) {
+            this.deps.onStreamText(`\n[retry attempt ${attempt}: ${error.message.slice(0, 80)}]\n`);
           }
         },
       };

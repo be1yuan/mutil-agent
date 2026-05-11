@@ -16,7 +16,7 @@ const FallbackConfigSchema = z.object({
   retryableErrors: z.array(z.string()).default(["rate_limit", "timeout", "server_error"]),
   fallbackModel: z
     .object({
-      provider: z.enum(["deepseek", "zhipu", "mimo"]),
+      provider: z.enum(["deepseek", "zhipu", "mimo", "kimi", "qwen"]),
       model: z.string().min(1),
     })
     .optional(),
@@ -83,7 +83,7 @@ const ReviewChainGlobalConfigSchema = z.object({
 });
 
 const ConfigSchema = z.object({
-  providers: z.record(z.enum(["deepseek", "zhipu", "mimo"]), ProviderConfigSchema).refine(
+  providers: z.record(z.enum(["deepseek", "zhipu", "mimo", "kimi", "qwen"]), ProviderConfigSchema).refine(
     (p) => Object.keys(p).length >= 1,
     "At least one provider is required"
   ),

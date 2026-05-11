@@ -24,7 +24,7 @@ const WorkflowStepSchema = z.object({
   agentTypes: z.array(z.string()).optional(),
   task: z.string().min(1, "Step task is required"),
   model: z.string().optional(),
-  provider: z.enum(["deepseek", "zhipu", "mimo"]).optional(),
+  provider: z.enum(["deepseek", "zhipu", "mimo", "kimi", "qwen"]).optional(),
   maxSteps: z.number().int().positive().optional(),
   budget: z.number().positive().optional(),
   timeout: z.number().int().positive().optional(),

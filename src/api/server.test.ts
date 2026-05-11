@@ -83,6 +83,16 @@ function createMockConfig(): OrchestratorConfig {
         baseURL: "https://api.mimo.com/anthropic",
         defaultModel: "mimo-v2-pro",
       },
+      kimi: {
+        apiKey: "test-key",
+        baseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        defaultModel: "kimi-k2.6",
+      },
+      qwen: {
+        apiKey: "test-key",
+        baseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        defaultModel: "qwen3.6-max-preview",
+      },
     },
     fallback: {
       maxRetries: 3,

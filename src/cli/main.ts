@@ -5,7 +5,7 @@ import path from "node:path";
 import fs from "node:fs";
 import { loadConfig, loadAgents } from "../config/loader.js";
 import { validateConfig } from "../config/validator.js";
-import { DeepSeekAdapter, GLMAdapter, MiMoAdapter } from "../adapters/anthropic-client.js";
+import { createModelAdapter } from "../adapters/anthropic-client.js";
 import { FallbackExecutor } from "../adapters/fallback-executor.js";
 import { AgentLoop, estimateTokenCount } from "../agent/agent-loop.js";
 import { AdapterSelector } from "../agent/adapter-selector.js";
@@ -61,12 +61,15 @@ const MODEL_CATALOG: { model: string; provider: ModelProvider; label: string }[]
   { model: "deepseek-v4-flash",  provider: "deepseek", label: "DeepSeek V4 Flash" },
   { model: "glm-4.7",            provider: "zhipu",    label: "GLM 4.7 (Zhipu)" },
   { model: "MiMo-V2.5-Pro",      provider: "mimo",     label: "MiMo V2.5 Pro" },
+  { model: "kimi-k2.6",          provider: "kimi",     label: "Kimi K2.6 (DashScope)" },
+  { model: "qwen3.6-max-preview", provider: "qwen",    label: "Qwen 3.6 Max Preview (DashScope)" },
 ];
 
 class Orchestrator {
   private adapters: Map<ModelProvider, ModelAdapter> = new Map();
   private fallbackExecutor!: FallbackExecutor;
   private agentDefinitions: Map<string, AgentDefinition> = new Map();
+  private agentSourcePaths: Map<string, string> = new Map();
   private workflowDefinitions: WorkflowDefinition[] = [];
   private workflowMatchCache: Map<string, string> = new Map();
   private logger!: ReturnType<typeof createAppLogger>;
@@ -94,15 +97,11 @@ class Orchestrator {
     const workspaceDir = path.dirname(path.resolve(this.configPath));
     await pruneStaleWorktrees(workspaceDir);
 
-    // Create adapters
+    // Create adapters — uses auto-detection factory
+    // that supports both Anthropic-format and OpenAI-format baseURLs
     for (const [provider, providerConfig] of Object.entries(config.providers)) {
-      if (provider === "deepseek") {
-        this.adapters.set(provider as ModelProvider, new DeepSeekAdapter(providerConfig.apiKey, providerConfig.nativeSearch));
-      } else if (provider === "zhipu") {
-        this.adapters.set(provider as ModelProvider, new GLMAdapter(providerConfig.apiKey));
-      } else if (provider === "mimo") {
-        this.adapters.set(provider as ModelProvider, new MiMoAdapter(providerConfig.apiKey, providerConfig.nativeSearch));
-      }
+      const p = provider as ModelProvider;
+      this.adapters.set(p, createModelAdapter(p, providerConfig));
     }
 
     // Setup fallback executor
@@ -115,6 +114,7 @@ class Orchestrator {
     const loadedAgents = await loadAgents(this.agentsDir);
     for (const [agentType, loaded] of loadedAgents) {
       this.agentDefinitions.set(agentType, loaded.definition);
+      this.agentSourcePaths.set(agentType, loaded.sourcePath);
     }
 
     // Load workflow definitions
@@ -997,6 +997,18 @@ class Orchestrator {
       content: result.content,
     }));
 
+    // Agent contribution summaries
+    console.log();
+    console.log(style.bold(`  ── ${t("meeting.contributions")} ──`));
+    for (const m of result.members) {
+      const preview = m.result.content
+        ? m.result.content.slice(0, 150).replace(/\n/g, " ")
+        : t("meeting.noOutput");
+      const c = m.result.status === "success" ? style.success : style.warning;
+      console.log(style.dim(`  [${m.agentType}] ${m.result.steps} steps · ¥${m.result.cost.toFixed(4)}`));
+      console.log(`     ${c(`"${preview}..."`)}`);
+    }
+
     if (result.content) {
       console.log(`\n--- Aggregated Output ---\n${result.content}`);
     }
@@ -1028,7 +1040,7 @@ class Orchestrator {
 
   /** /agent wizard — interactive agent management */
   private async agentWizard(): Promise<void> {
-    await runAgentWizard(this.agentDefinitions, MODEL_CATALOG);
+    await runAgentWizard(this.agentDefinitions, this.agentSourcePaths, MODEL_CATALOG);
   }
 
   /** Debate mode — multi-agent multi-round debate */
@@ -1068,6 +1080,25 @@ class Orchestrator {
       console.log(result.moderatorResult.content);
     }
 
+    // Agent contribution summaries
+    const contribs = new Map<string, { steps: number; cost: number; preview: string }>();
+    for (const round of result.rounds) {
+      for (const resp of round.responses) {
+        const prev = contribs.get(resp.agentType);
+        if (prev) {
+          prev.steps += resp.steps;
+          prev.cost += resp.cost;
+        } else {
+          contribs.set(resp.agentType, { steps: resp.steps, cost: resp.cost, preview: resp.content.slice(0, 120) });
+        }
+      }
+    }
+    console.log();
+    console.log(style.bold(`  ── ${t("meeting.contributions")} ──`));
+    for (const [agentType, c] of contribs) {
+      console.log(style.dim(`  [${agentType}] ${c.steps} steps · ¥${c.cost.toFixed(4)} · "${c.preview}..."`));
+    }
+
     const icon = result.status === "success" ? style.success(symbols.ok) : style.error(symbols.fail);
     console.log(`\n  ${icon} ${result.status} · ¥${result.totalCost.toFixed(4)}`);
 
@@ -1100,6 +1131,26 @@ class Orchestrator {
           console.log(style.warning(`    Review: NEEDS_CHANGES — ${fb.slice(0, 100)}`));
         }
       }
+    }
+
+    // Agent contribution summaries
+    let coderSteps = 0, coderCost = 0, reviewerSteps = 0, reviewerCost = 0;
+    let coderPreview = "", reviewerPreview = "";
+    for (const iter of result.iterations) {
+      coderSteps += iter.coderResult.steps;
+      coderCost += iter.coderResult.cost;
+      if (!coderPreview) coderPreview = iter.coderResult.content.slice(0, 120);
+      if (iter.reviewerResult) {
+        reviewerSteps += iter.reviewerResult.steps;
+        reviewerCost += iter.reviewerResult.cost;
+        if (!reviewerPreview) reviewerPreview = iter.reviewerResult.content.slice(0, 120);
+      }
+    }
+    console.log();
+    console.log(style.bold(`  ── ${t("meeting.contributions")} ──`));
+    console.log(style.dim(`  [coder] ${coderSteps} steps · ¥${coderCost.toFixed(4)} · "${coderPreview}..."`));
+    if (reviewerSteps > 0) {
+      console.log(style.dim(`  [reviewer] ${reviewerSteps} steps · ¥${reviewerCost.toFixed(4)} · "${reviewerPreview}..."`));
     }
 
     const icon = result.status === "success" ? style.success(symbols.ok) : style.error(symbols.fail);
@@ -2057,5 +2108,18 @@ program
       });
     }
   });
+
+// ── Global error handlers (prevent silent exits on Windows) ──
+
+process.on("unhandledRejection", (reason) => {
+  console.error(style.error(`\n  Unhandled rejection:`), reason instanceof Error ? reason.message : reason);
+  console.error(reason instanceof Error ? reason.stack : "");
+});
+
+process.on("uncaughtException", (error) => {
+  console.error(style.error(`\n  Uncaught exception: ${error.message}`));
+  console.error(error.stack ?? "");
+  process.exit(1);
+});
 
 program.parse();

@@ -7,6 +7,7 @@ import * as readline from "node:readline";
 import { t } from "./i18n.js";
 import { style } from "./ansi.js";
 import { questionWithEsc, ESC } from "./question-with-esc.js";
+import { saveAgent } from "../config/loader.js";
 import type { AgentDefinition } from "../agent/types.js";
 import type { ModelProvider } from "../types/core.js";
 
@@ -30,6 +31,7 @@ function formatTools(tools: Record<string, unknown>): string {
 
 export async function runAgentWizard(
   agentDefs: Map<string, AgentDefinition>,
+  sourcePaths: Map<string, string>,
   modelCatalog: { model: string; provider: ModelProvider; label: string }[]
 ): Promise<void> {
   const rl = readline.createInterface({
@@ -49,7 +51,7 @@ export async function runAgentWizard(
       if (!agent) return; // cancelled
 
       // ── Step 2: Action menu (loop) ──
-      await actionLoop(rl, agent.name, agent.definition, agentDefs, modelCatalog);
+      await actionLoop(rl, agent.name, agent.definition, agentDefs, sourcePaths, modelCatalog);
     }
   } finally {
     rl.close();
@@ -105,6 +107,7 @@ async function actionLoop(
   agentName: string,
   definition: AgentDefinition,
   agentDefs: Map<string, AgentDefinition>,
+  sourcePaths: Map<string, string>,
   modelCatalog: { model: string; provider: ModelProvider; label: string }[]
 ): Promise<void> {
   while (true) {
@@ -122,12 +125,12 @@ async function actionLoop(
     if (raw === "1") {
       showAgentDetail(agentName, definition);
     } else if (raw === "2") {
-      const changed = await changeModel(rl, agentName, definition, modelCatalog);
+      const changed = await changeModel(rl, agentName, definition, sourcePaths, modelCatalog);
       if (changed) {
         console.log(style.success(`  ${t("agent.model.switched")} ${style.bold(definition.model)}`));
       }
     } else if (raw === "3") {
-      await editAgentConfig(rl, agentName, definition);
+      await editAgentConfig(rl, agentName, definition, sourcePaths);
     } else if (raw === "4" || raw === "" || raw === ESC) {
       return; // back to list
     }
@@ -165,6 +168,7 @@ async function changeModel(
   rl: readline.Interface,
   agentName: string,
   definition: AgentDefinition,
+  sourcePaths: Map<string, string>,
   modelCatalog: { model: string; provider: ModelProvider; label: string }[]
 ): Promise<boolean> {
   console.log();
@@ -186,6 +190,8 @@ async function changeModel(
     const selected = modelCatalog[num - 1];
     definition.model = selected.model;
     definition.provider = selected.provider;
+    const src = sourcePaths.get(agentName);
+    if (src) await saveAgent(src, definition);
     return true;
   }
 
@@ -197,18 +203,22 @@ async function changeModel(
 async function editAgentConfig(
   rl: readline.Interface,
   agentName: string,
-  definition: AgentDefinition
+  definition: AgentDefinition,
+  sourcePaths: Map<string, string>
 ): Promise<void> {
   console.log();
   console.log(style.bold(`  ${t("agent.edit.title")} "${agentName}"`));
   console.log(style.dim(`  ${t("agent.edit.hint")}`));
   console.log();
 
+  let changed = false;
+
   // systemPrompt
   console.log(`  ${t("agent.edit.prompt")} [${t("agent.edit.currentLen")}: ${definition.systemPrompt.length}]`);
   const newPrompt = await question(rl, `  > `);
   if (newPrompt) {
     definition.systemPrompt = newPrompt;
+    changed = true;
   }
 
   // maxSteps
@@ -216,7 +226,7 @@ async function editAgentConfig(
   const stepsRaw = await question(rl, `  > `);
   if (stepsRaw) {
     const parsed = parseInt(stepsRaw, 10);
-    if (!isNaN(parsed) && parsed > 0) definition.maxSteps = parsed;
+    if (!isNaN(parsed) && parsed > 0) { definition.maxSteps = parsed; changed = true; }
   }
 
   // timeout
@@ -224,13 +234,14 @@ async function editAgentConfig(
   const timeoutRaw = await question(rl, `  > `);
   if (timeoutRaw) {
     const parsed = parseInt(timeoutRaw, 10);
-    if (!isNaN(parsed) && parsed > 0) definition.timeout = parsed;
+    if (!isNaN(parsed) && parsed > 0) { definition.timeout = parsed; changed = true; }
   }
 
   // isolation
   console.log(`  ${t("agent.edit.isolation")} [${t("agent.edit.current")}: ${definition.isolation ?? t("agent.detail.none")}]:`);
   const isoRaw = await question(rl, `  > `);
   if (isoRaw) {
+    changed = true;
     const lower = isoRaw.toLowerCase();
     if (lower === "context" || lower === "worktree") {
       definition.isolation = lower as "context" | "worktree";
@@ -239,5 +250,9 @@ async function editAgentConfig(
     }
   }
 
+  if (changed) {
+    const src = sourcePaths.get(agentName);
+    if (src) await saveAgent(src, definition);
+  }
   console.log(style.success(`  ${t("agent.edit.updated")}: "${agentName}"`));
 }

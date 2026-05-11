@@ -6,6 +6,8 @@ const PRICING: Record<ModelProvider, { input: number; output: number; cacheHit?:
   deepseek: { input: 2.87, output: 5.74, cacheHit: 0.0238 }, // 1 USD = 7 CNY
   zhipu: { input: 7.0, output: 22.4 }, // 1 USD = 7 CNY
   mimo: { input: 7.0, output: 21.0, cacheHit: 1.4 }, // 1 USD = 7 CNY
+  kimi: { input: 8.0, output: 24.0 }, // approximate pricing, subject to provider billing
+  qwen: { input: 4.0, output: 12.0 }, // approximate pricing, subject to provider billing
 };
 
 // ── Cost tracker ──

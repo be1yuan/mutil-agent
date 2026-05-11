@@ -14,6 +14,8 @@ import type {
   ContentBlock,
 } from "./types.js";
 import type { ModelProvider } from "../types/core.js";
+import { OpenAIAdapter } from "./openai-client.js";
+import type { ProviderConfig } from "../config/types.js";
 import { getLogger } from "../observability/logger.js";
 
 // ── Message format conversion ──
@@ -473,4 +475,110 @@ export class MiMoAdapter extends BaseAnthropicAdapter {
       },
     });
   }
+}
+
+// ── Format detection ──
+
+/**
+ * Detect whether a baseURL is an Anthropic-compatible endpoint or an
+ * OpenAI-compatible one. Anthropic-compatible endpoints contain "/anthropic"
+ * in their URL path (e.g. https://api.deepseek.com/anthropic).
+ */
+export function isAnthropicEndpoint(baseURL: string): boolean {
+  try {
+    const url = new URL(baseURL);
+    return url.pathname.includes("/anthropic");
+  } catch {
+    // If URL parsing fails, fall back to string check
+    return baseURL.includes("/anthropic");
+  }
+}
+
+// ── Default model info catalog ──
+
+/**
+ * Default ModelInfo for providers that don't have a dedicated adapter class.
+ * Used by the generic factory function for kimi, qwen, etc.
+ */
+export function getDefaultModelInfo(provider: ModelProvider): ModelInfo {
+  switch (provider) {
+    case "kimi":
+      return {
+        name: "kimi-k2.6",
+        provider: "kimi",
+        contextWindow: 128_000,
+        pricing: { input: 8.0, output: 24.0 },
+        capabilities: {
+          toolCalling: true,
+          streaming: true,
+          jsonMode: true,
+          thinking: false,
+        },
+      };
+    case "qwen":
+      return {
+        name: "qwen-max",
+        provider: "qwen",
+        contextWindow: 128_000,
+        pricing: { input: 4.0, output: 12.0 },
+        capabilities: {
+          toolCalling: true,
+          streaming: true,
+          jsonMode: true,
+          thinking: false,
+        },
+      };
+    default:
+      return {
+        name: provider,
+        provider,
+        contextWindow: 128_000,
+        pricing: { input: 5.0, output: 15.0 },
+        capabilities: {
+          toolCalling: true,
+          streaming: true,
+          jsonMode: true,
+          thinking: false,
+        },
+      };
+  }
+}
+
+// ── Adapter factory ──
+
+/**
+ * Create a ModelAdapter for any provider by auto-detecting the API format
+ * from the baseURL.
+ *
+ * - If baseURL contains "/anthropic" → Anthropic SDK adapter
+ * - Otherwise → OpenAI-compatible adapter
+ *
+ * Known providers (deepseek, zhipu, mimo) use their dedicated adapter classes
+ * for optimal compatibility. New providers use the generic detection path.
+ */
+export function createModelAdapter(
+  provider: ModelProvider,
+  config: ProviderConfig
+): ModelAdapter {
+  const { apiKey, baseURL, nativeSearch } = config;
+
+  if (provider === "deepseek") {
+    return new DeepSeekAdapter(apiKey, nativeSearch);
+  }
+  if (provider === "zhipu") {
+    return new GLMAdapter(apiKey);
+  }
+  if (provider === "mimo") {
+    return new MiMoAdapter(apiKey, nativeSearch);
+  }
+
+  // Unknown provider — auto-detect format from baseURL
+  if (isAnthropicEndpoint(baseURL)) {
+    const info = getDefaultModelInfo(provider);
+    return new BaseAnthropicAdapter(provider, apiKey, baseURL, info, nativeSearch);
+  }
+
+  // OpenAI-compatible endpoint
+  const info = getDefaultModelInfo(provider);
+  return new OpenAIAdapter(provider, apiKey, baseURL, info, nativeSearch);
 }

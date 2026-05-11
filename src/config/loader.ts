@@ -98,3 +98,22 @@ export async function loadAgents(agentsDir: string): Promise<Map<string, LoadedA
 
   return agents;
 }
+
+/**
+ * Save an AgentDefinition back to its source .md file.
+ * Reconstructs the YAML frontmatter + markdown body using gray-matter.
+ */
+export async function saveAgent(sourcePath: string, definition: AgentDefinition): Promise<void> {
+  const frontmatter: Record<string, unknown> = {
+    model: definition.model,
+    maxSteps: definition.maxSteps,
+    timeout: definition.timeout,
+  };
+  if (definition.provider) frontmatter.provider = definition.provider;
+  if (definition.description) frontmatter.description = definition.description;
+  if (definition.isolation) frontmatter.isolation = definition.isolation;
+  if (Object.keys(definition.tools).length > 0) frontmatter.tools = definition.tools;
+
+  const output = matter.stringify(definition.systemPrompt, frontmatter);
+  await fs.writeFile(sourcePath, output, "utf-8");
+}

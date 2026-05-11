@@ -206,6 +206,8 @@ const translations: Record<string, Record<Locale, string>> = {
   // Confirm
   "meeting.confirm.title": { en: "Meeting Config", zh: "会议配置确认" },
   "meeting.confirm.mode": { en: "Mode", zh: "模式" },
+  "meeting.contributions": { en: "Agent Contributions", zh: "Agent贡献摘要" },
+  "meeting.noOutput": { en: "(no output)", zh: "(无输出)" },
 
   // ── Generic ──
   "generic.yes": { en: "Y/n", zh: "Y/n" },

@@ -49,6 +49,11 @@ const ApiConfigSchema = z.object({
   port: z.number().int().min(1).max(65535).default(3100),
   authToken: z.string().optional(),
   cors: z.boolean().default(true),
+  historyRetention: z.number().int().min(10).max(10000).default(500),
+  dashboard: z.object({
+    enabled: z.boolean().default(false),
+    port: z.number().int().min(1).max(65535).default(3101),
+  }).optional(),
 });
 
 const WorkflowsConfigSchema = z.object({

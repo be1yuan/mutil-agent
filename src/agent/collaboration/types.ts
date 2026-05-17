@@ -24,6 +24,8 @@ export interface DebateConfig {
   judge: boolean;
   judgeAgentType?: string;
   prompt: string;
+  /** Custom judge prompt template. Use {topic} and {responses} placeholders. Overrides the default dimensions. */
+  customJudgePrompt?: string;
 }
 
 export interface DebateRoundResult {

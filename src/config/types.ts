@@ -52,6 +52,15 @@ export interface ApiConfig {
   authToken?: string;
   /** Enable CORS headers (default: true) */
   cors: boolean;
+  /** Maximum number of completed tasks to retain in history (default: 500) */
+  historyRetention?: number;
+  /** Dashboard web server config */
+  dashboard?: {
+    /** Enable dashboard alongside API server (default: false) */
+    enabled?: boolean;
+    /** Dashboard web server port (default: 3101) */
+    port?: number;
+  };
 }
 
 export interface WorkflowsConfig {

@@ -13,6 +13,8 @@
 
 import { AgentLoop, type AgentLoopDeps } from "../agent/agent-loop.js";
 import { Committee, type CommitteeConfig } from "../agent/committee.js";
+import { Debate } from "../agent/collaboration/debate.js";
+import { ReviewChain } from "../agent/collaboration/review-chain.js";
 import type { AgentResult, ModelProvider } from "../types/core.js";
 import { getLogger } from "../observability/logger.js";
 import { resolveTemplate } from "./template-resolver.js";
@@ -278,6 +280,12 @@ export class WorkflowEngine {
         case "checkpoint":
           stepResult = await this.executeCheckpointStep(step, run);
           break;
+        case "debate":
+          stepResult = await this.executeDebateStep(step, resolvedTask, run, budget);
+          break;
+        case "review-chain":
+          stepResult = await this.executeReviewChainStep(step, resolvedTask, run, budget);
+          break;
         default:
           throw new Error(`Unknown step type: ${(step as { type: string }).type}`);
       }
@@ -464,18 +472,7 @@ export class WorkflowEngine {
         completedAt: Date.now(),
       };
     } catch (err) {
-      return {
-        stepId: step.id,
-        status: "failed",
-        result: {
-          status: "error",
-          error: err instanceof Error ? err.message : String(err),
-          steps: 0,
-          cost: 0,
-        },
-        startedAt,
-        completedAt: Date.now(),
-      };
+      return this.createFailedResult(step.id, startedAt, err);
     }
   }
 
@@ -517,18 +514,83 @@ export class WorkflowEngine {
         completedAt: Date.now(),
       };
     } catch (err) {
+      return this.createFailedResult(step.id, startedAt, err);
+    }
+  }
+
+  private async executeDebateStep(
+    step: WorkflowStep,
+    task: string,
+    run: WorkflowRun,
+    budget: number
+  ): Promise<StepResult> {
+    if (!step.debateConfig) {
       return {
         stepId: step.id,
         status: "failed",
+        result: { status: "error", error: `Step "${step.id}": debateConfig is required`, steps: 0, cost: 0 },
+        startedAt: Date.now(),
+        completedAt: Date.now(),
+      };
+    }
+    const startedAt = Date.now();
+
+    try {
+      const debate = new Debate(this.deps.agentLoopDeps);
+      const result = await debate.run(task, step.debateConfig, step.budget ?? budget);
+
+      return {
+        stepId: step.id,
+        status: result.status === "success" || result.status === "partial" ? "completed" : "failed",
         result: {
-          status: "error",
-          error: err instanceof Error ? err.message : String(err),
-          steps: 0,
-          cost: 0,
+          status: result.status === "partial" ? "success" : result.status,
+          content: result.content,
+          steps: result.totalSteps,
+          cost: result.totalCost,
         },
         startedAt,
         completedAt: Date.now(),
       };
+    } catch (err) {
+      return this.createFailedResult(step.id, startedAt, err);
+    }
+  }
+
+  private async executeReviewChainStep(
+    step: WorkflowStep,
+    task: string,
+    run: WorkflowRun,
+    budget: number
+  ): Promise<StepResult> {
+    if (!step.reviewChainConfig) {
+      return {
+        stepId: step.id,
+        status: "failed",
+        result: { status: "error", error: `Step "${step.id}": reviewChainConfig is required`, steps: 0, cost: 0 },
+        startedAt: Date.now(),
+        completedAt: Date.now(),
+      };
+    }
+    const startedAt = Date.now();
+
+    try {
+      const chain = new ReviewChain(this.deps.agentLoopDeps);
+      const result = await chain.run(task, step.reviewChainConfig, step.budget ?? budget);
+
+      return {
+        stepId: step.id,
+        status: result.status === "success" ? "completed" : "failed",
+        result: {
+          status: result.status === "max_iterations_reached" ? "max_steps_reached" : result.status,
+          content: result.content,
+          steps: result.totalSteps,
+          cost: result.totalCost,
+        },
+        startedAt,
+        completedAt: Date.now(),
+      };
+    } catch (err) {
+      return this.createFailedResult(step.id, startedAt, err);
     }
   }
 
@@ -576,6 +638,21 @@ export class WorkflowEngine {
       status: "waiting_approval",
       approved: false,
       startedAt: Date.now(),
+    };
+  }
+
+  private createFailedResult(stepId: string, startedAt: number, error: unknown): StepResult {
+    return {
+      stepId,
+      status: "failed",
+      result: {
+        status: "error",
+        error: error instanceof Error ? error.message : String(error),
+        steps: 0,
+        cost: 0,
+      },
+      startedAt,
+      completedAt: Date.now(),
     };
   }
 }

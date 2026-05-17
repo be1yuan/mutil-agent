@@ -9,3 +9,9 @@ logs/
 Thumbs.db
 orchestrator.yaml
 .claude/settings.local.json
+output-2026-05-11T14-00-11.md
+verify-sci-intro-workflow.mjs
+.claude/settings.local.json
+test-output.txt
+.workbuddy/
+.workbuddy/memory/MEMORY.md

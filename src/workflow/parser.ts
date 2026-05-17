@@ -9,7 +9,24 @@ import type { WorkflowDefinition, WorkflowStep, WorkflowCondition, StepType } fr
 
 // ── Zod schemas ──
 
-const StepTypeSchema = z.enum(["agent", "committee", "checkpoint"]);
+const StepTypeSchema = z.enum(["agent", "committee", "checkpoint", "debate", "review-chain"]);
+
+const DebateConfigSchema = z.object({
+  participants: z.array(z.string()).min(1, "At least one participant is required"),
+  rounds: z.number().int().positive().default(2),
+  moderator: z.string().optional(),
+  judge: z.boolean().default(true),
+  judgeAgentType: z.string().optional(),
+  prompt: z.string().min(1),
+  customJudgePrompt: z.string().optional(),
+});
+
+const ReviewChainConfigSchema = z.object({
+  coder: z.string().min(1),
+  reviewer: z.string().min(1),
+  maxIterations: z.number().int().positive().default(3),
+  acceptThreshold: z.enum(["auto", "manual"]).default("auto"),
+});
 
 const WorkflowConditionSchema = z.object({
   field: z.enum(["status", "content", "cost"]),
@@ -29,6 +46,8 @@ const WorkflowStepSchema = z.object({
   budget: z.number().positive().optional(),
   timeout: z.number().int().positive().optional(),
   strategy: z.string().optional(),
+  debateConfig: DebateConfigSchema.optional(),
+  reviewChainConfig: ReviewChainConfigSchema.optional(),
   on: z.object({
     condition: WorkflowConditionSchema,
     then: z.string().min(1),
@@ -92,6 +111,12 @@ export function parseWorkflowYaml(yamlContent: string): WorkflowDefinition {
     }
     if (step.type === "committee" && (!step.agentTypes || step.agentTypes.length === 0)) {
       issues.push(`Step "${step.id}": agentTypes is required for type=committee`);
+    }
+    if (step.type === "debate" && !step.debateConfig) {
+      issues.push(`Step "${step.id}": debateConfig is required for type=debate`);
+    }
+    if (step.type === "review-chain" && !step.reviewChainConfig) {
+      issues.push(`Step "${step.id}": reviewChainConfig is required for type=review-chain`);
     }
 
     // Validate branch targets exist

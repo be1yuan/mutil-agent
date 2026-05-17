@@ -11,11 +11,11 @@ import type { AgentLoopDeps } from "../agent/agent-loop.js";
 import type { AgentDefinition } from "../agent/types.js";
 import type { DebateConfig, ReviewChainConfig } from "../agent/collaboration/types.js";
 import { AgentLoop } from "../agent/agent-loop.js";
-import { Committee } from "../agent/committee.js";
+import { Committee, type CommitteeConfig } from "../agent/committee.js";
 import { Debate } from "../agent/collaboration/debate.js";
 import { ReviewChain } from "../agent/collaboration/review-chain.js";
 import { CostTracker } from "../observability/cost-tracker.js";
-import { SSEClientSet } from "./sse.js";
+import { SSEClientSet, GlobalSSEClientSet } from "./sse.js";
 import { getLogger } from "../observability/logger.js";
 
 // ── Types ──
@@ -41,6 +41,14 @@ export interface TaskRecord {
   completedAt?: number;
   /** SSE clients subscribed to this task */
   sseClients: SSEClientSet;
+  /** User-provided mode configs (from SubmitTaskRequest) */
+  debateConfig?: DebateConfig;
+  reviewChainConfig?: ReviewChainConfig;
+  committeeConfig?: {
+    agentTypes: string[];
+    strategy?: string;
+    weights?: Record<string, number>;
+  };
 }
 
 export interface SubmitTaskRequest {
@@ -62,7 +70,9 @@ export interface SubmitTaskRequest {
 export class TaskManager {
   private tasks = new Map<string, TaskRecord>();
   private queue: string[] = [];
+  private completedTasks: TaskRecord[] = [];
   private maxConcurrent: number;
+  private historyRetention: number;
   private runningCount = 0;
   private deps: AgentLoopDeps;
   private agentDefinitions: Map<string, AgentDefinition>;
@@ -70,11 +80,13 @@ export class TaskManager {
   constructor(
     deps: AgentLoopDeps,
     agentDefinitions: Map<string, AgentDefinition>,
-    maxConcurrent: number = 3
+    maxConcurrent: number = 3,
+    historyRetention: number = 500
   ) {
     this.deps = deps;
     this.agentDefinitions = agentDefinitions;
     this.maxConcurrent = maxConcurrent;
+    this.historyRetention = historyRetention;
   }
 
   /** Submit a new task. Returns the task record. */
@@ -93,6 +105,9 @@ export class TaskManager {
       status: "submitted",
       createdAt: Date.now(),
       sseClients: new SSEClientSet(),
+      debateConfig: request.debateConfig,
+      reviewChainConfig: request.reviewChainConfig,
+      committeeConfig: request.committeeConfig,
     };
 
     this.tasks.set(id, record);
@@ -101,6 +116,7 @@ export class TaskManager {
 
     // Broadcast task creation
     record.sseClients.broadcast("status", { taskId: id, status: "queued" });
+    GlobalSSEClientSet.broadcast("task", { taskId: id, task: record.task, mode: record.mode, status: "queued", createdAt: record.createdAt });
 
     // Try to start immediately
     this.processQueue();
@@ -118,6 +134,14 @@ export class TaskManager {
     const all = Array.from(this.tasks.values());
     if (status) return all.filter((t) => t.status === status);
     return all;
+  }
+
+  /** List completed/failed tasks (history), optionally filtered by status */
+  listCompleted(limit: number = 50, status?: TaskStatus): TaskRecord[] {
+    const filtered = status
+      ? this.completedTasks.filter((t) => t.status === status)
+      : this.completedTasks;
+    return filtered.slice(-limit).reverse(); // newest first
   }
 
   /** Get SSE client set for a task */
@@ -148,6 +172,7 @@ export class TaskManager {
       taskId: record.id,
       status: "running",
     });
+    GlobalSSEClientSet.broadcast("task", { taskId: record.id, task: record.task, mode: record.mode, status: "running", startedAt: record.startedAt });
 
     // Build deps with per-task CostTracker (avoids global budget competition)
     const taskCostTracker = new CostTracker(record.budget);
@@ -173,6 +198,7 @@ export class TaskManager {
       onBudgetUpdate: (spent: number, remaining: number) => {
         this.deps.onBudgetUpdate?.(spent, remaining);
         record.sseClients.broadcast("cost", { taskId: record.id, spent, remaining });
+        GlobalSSEClientSet.broadcast("cost", { taskId: record.id, spent, remaining });
       },
     };
 
@@ -224,6 +250,8 @@ export class TaskManager {
       });
 
       record.sseClients.broadcast("result", { taskId: record.id, ...result });
+      GlobalSSEClientSet.broadcast("result", { taskId: record.id, status: record.status, result });
+      this.archiveCompleted(record);
     } catch (err) {
       record.status = "failed";
       record.result = {
@@ -234,6 +262,8 @@ export class TaskManager {
       };
       record.completedAt = Date.now();
       record.sseClients.broadcast("result", { taskId: record.id, ...record.result });
+      GlobalSSEClientSet.broadcast("result", { taskId: record.id, status: "failed", result: record.result });
+      this.archiveCompleted(record);
     } finally {
       record.sseClients.closeAll();
       this.runningCount--;
@@ -241,9 +271,11 @@ export class TaskManager {
     }
   }
 
-  /** Resolve debate config from request or use defaults */
-  private resolveDebateConfig(record: TaskRecord): import("../agent/collaboration/types.js").DebateConfig {
-    // Inline default config — no access to global config here
+  /** Resolve debate config — user-provided config takes priority, falls back to defaults */
+  private resolveDebateConfig(record: TaskRecord): DebateConfig {
+    if (record.debateConfig) {
+      return record.debateConfig;
+    }
     return {
       participants: ["explore", "architect"],
       rounds: 2,
@@ -252,8 +284,11 @@ export class TaskManager {
     };
   }
 
-  /** Resolve review-chain config from request or use defaults */
-  private resolveReviewChainConfig(record: TaskRecord): import("../agent/collaboration/types.js").ReviewChainConfig {
+  /** Resolve review-chain config — user-provided config takes priority, falls back to defaults */
+  private resolveReviewChainConfig(record: TaskRecord): ReviewChainConfig {
+    if (record.reviewChainConfig) {
+      return record.reviewChainConfig;
+    }
     return {
       coder: "coder",
       reviewer: "reviewer",
@@ -262,12 +297,27 @@ export class TaskManager {
     };
   }
 
-  /** Resolve committee config from request or use defaults */
-  private resolveCommitteeConfig(record: TaskRecord): import("../agent/committee.js").CommitteeConfig {
+  /** Resolve committee config — user-provided config takes priority, falls back to defaults */
+  private resolveCommitteeConfig(record: TaskRecord): CommitteeConfig {
+    if (record.committeeConfig) {
+      return {
+        agentTypes: record.committeeConfig.agentTypes,
+        strategy: record.committeeConfig.strategy as CommitteeConfig["strategy"] ?? "concat",
+        ...(record.committeeConfig.weights ? { weights: record.committeeConfig.weights } : {}),
+      };
+    }
     return {
       agentTypes: ["explore", "coder", "reviewer", "architect"],
       strategy: "concat",
     };
+  }
+
+  /** Archive a completed or failed task to history, trimming to retention limit */
+  private archiveCompleted(record: TaskRecord): void {
+    this.completedTasks.push({ ...record });
+    if (this.completedTasks.length > this.historyRetention) {
+      this.completedTasks = this.completedTasks.slice(-this.historyRetention);
+    }
   }
 
   /** Map AgentResult status to TaskStatus */

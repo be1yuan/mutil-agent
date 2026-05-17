@@ -115,3 +115,6 @@ export class SSEClientSet {
     }
   }
 }
+
+/** Global SSE client set for system-level dashboard events */
+export const GlobalSSEClientSet = new SSEClientSet();

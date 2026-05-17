@@ -22,7 +22,9 @@ import { CostGauge } from "./components/cost-gauge.js";
 import { OutputPanel } from "./components/output-panel.js";
 import { ApprovalBar } from "./components/approval-bar.js";
 import { DashboardEventBridge } from "./event-bridge.js";
-import { toolSymbol, summarizeToolArgs } from "../ansi.js";
+import { toolSymbol, summarizeToolArgs, symbols } from "../ansi.js";
+import { useTerminalSize } from "./hooks/use-terminal-size.js";
+import { getDividerWidth } from "./theme.js";
 import type {
   DashboardEvent,
   AgentInfo,
@@ -100,6 +102,12 @@ export function App({
   // Counter for output line IDs
   const lineIdRef = useRef(0);
 
+  // Track when the agent started (set on first event)
+  const startTimeRef = useRef<number>(0);
+
+  // Terminal size for responsive layout
+  const { columns } = useTerminalSize();
+
   // ── Initialize main agent in the agents map ──
 
   useEffect(() => {
@@ -132,6 +140,9 @@ export function App({
 
   useEffect(() => {
     const handler = (event: DashboardEvent) => {
+      // Capture start time on first event
+      if (startTimeRef.current === 0) startTimeRef.current = Date.now();
+
       switch (event.type) {
         case "step": {
           const d = event.data as StepEventData;
@@ -388,7 +399,7 @@ export function App({
           <Text dimColor>  Budget: ¥{budget.toFixed(2)}  |  Max steps: {maxSteps}</Text>
         </Box>
         <Box>
-          <Text dimColor>{"─".repeat(50)}</Text>
+          <Text dimColor>{symbols.boxH.repeat(getDividerWidth(columns))}</Text>
         </Box>
         <Box marginY={1}>
           <Text bold>Enter your task:</Text>
@@ -415,23 +426,24 @@ export function App({
           currentStep={currentStep}
           maxSteps={maxSteps}
           agents={agents}
+          startTime={startTimeRef.current || undefined}
         />
-        <CostGauge spent={spent} budget={budget} provider={provider} />
+        <CostGauge spent={spent} budget={budget} provider={provider} currentStep={currentStep} />
       </Box>
 
       {/* Divider */}
       <Box width="100%">
-        <Text dimColor>{"─".repeat(60)}</Text>
+        <Text dimColor>{symbols.boxH.repeat(getDividerWidth(columns))}</Text>
       </Box>
 
       {/* Middle: Output */}
-      <OutputPanel lines={outputLines} maxHeight={isDone ? 12 : 20} />
+      <OutputPanel lines={outputLines} maxHeight={isDone ? 12 : 20} isDone={isDone} />
 
       {/* Result section (when done with content) */}
       {isDone && contentLines.length > 0 && (
         <>
           <Box width="100%">
-            <Text dimColor>{"─".repeat(60)}</Text>
+            <Text dimColor>{symbols.boxH.repeat(getDividerWidth(columns))}</Text>
           </Box>
           <Box flexDirection="column" paddingX={1}>
             <Text bold color={statusColor}>

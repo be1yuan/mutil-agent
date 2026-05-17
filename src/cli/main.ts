@@ -1222,10 +1222,11 @@ class Orchestrator {
   }
 
   /** Start the HTTP API server */
-  async serve(options: { host?: string; port?: number }): Promise<void> {
+  async serve(options: { host?: string; port?: number; dashboardWeb?: boolean }): Promise<void> {
     const apiConfig = this.config.api;
     const host = options.host ?? apiConfig?.host ?? "127.0.0.1";
     const port = options.port ?? apiConfig?.port ?? 3100;
+    const dashboardPort = apiConfig?.dashboard?.port ?? 3101;
 
     const workspaceDir = path.dirname(path.resolve(this.configPath));
     const budget = this.config.budget.maxYuan;
@@ -1266,12 +1267,34 @@ class Orchestrator {
     console.log(style.dim(`  Endpoints: POST /api/tasks, GET /api/tasks/:id, GET /api/tasks/:id/stream`));
     console.log(style.dim(`  Agents: ${Array.from(this.agentDefinitions.keys()).join(", ")}`));
     console.log(style.dim(`  Mailbox: ${this.mailbox ? "enabled" : "disabled"}`));
+
+    // Dashboard web server
+    let dashboardProcess: import("node:child_process").ChildProcess | null = null;
+    if (options.dashboardWeb || apiConfig?.dashboard?.enabled) {
+      const repoRoot = path.resolve(path.dirname(this.configPath));
+      const dashPath = path.join(repoRoot, "apps", "dashboard", "src", "server.ts");
+      const { spawn } = await import("node:child_process");
+      dashboardProcess = spawn("npx", ["tsx", dashPath], {
+        env: { ...process.env, PORT: String(dashboardPort), AGENT_API_URL: `http://${host}:${port}` },
+        stdio: "inherit",
+      });
+      dashboardProcess.on("error", () => {
+        console.log(style.warning("  Failed to start dashboard. Run 'pnpm dev:dashboard' manually."));
+      });
+      console.log(style.success(`  Dashboard at http://127.0.0.1:${dashboardPort}`));
+    } else {
+      console.log(style.dim("  Dashboard: use --dashboard-web to enable web dashboard"));
+    }
+
     console.log();
     console.log("  Press Ctrl+C to stop");
 
     // Graceful shutdown
     const shutdown = async () => {
       console.log("\nShutting down...");
+      if (dashboardProcess) {
+        dashboardProcess.kill("SIGTERM");
+      }
       await this.apiServer?.stop();
       process.exit(0);
     };
@@ -1862,11 +1885,12 @@ program
   .option("-c, --config <path>", "Config file path", "orchestrator.yaml")
   .option("--host <host>", "Bind host (default: 127.0.0.1)")
   .option("--port <port>", "Bind port (default: 3100)", parseInt)
-  .action(async (options: { config: string; host?: string; port?: number }) => {
+  .option("--dashboard-web", "Also start the web dashboard at http://127.0.0.1:3101")
+  .action(async (options: { config: string; host?: string; port?: number; dashboardWeb?: boolean }) => {
     const agentsDir = path.join(path.dirname(options.config), ".agents");
     const orchestrator = new Orchestrator(options.config, agentsDir);
     await orchestrator.init();
-    await orchestrator.serve(options);
+    await orchestrator.serve({ host: options.host, port: options.port, dashboardWeb: options.dashboardWeb });
   });
 
 program

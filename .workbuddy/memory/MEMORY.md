@@ -2,9 +2,9 @@
 
 ## 项目概况
 - 项目路径: D:/MutilAgentWork
-- 设计文档: DESIGN-v6 ~ v9
+- 设计文档: DESIGN-v6 ~ v10（agent-orchV2-0.md）
 - 进度文档: PROGRESS.md
-- v0.1 ~ v0.6 全部完成，v1.0 待规划
+- v0.1 ~ v1.0 全部完成，v2.0 Phase 1（工作流引擎）已完成
 - ✅ 端到端验证通过：npm link + agent-orch run/list-agents/validate/init/serve 全部可用
 - 真实 LLM 调用成功（DeepSeek V4-Pro + explore agent + Glob/Read 工具）
 - ✅ 交互式 UX：任务后操作菜单（继续聊天/保存/退出）、-i 交互式模式选择、-m single/committee
@@ -25,11 +25,12 @@
 - ink/React/cheerio 标记为 external/peer/optional，运行时按需加载
 
 ## 当前代码规模
-- 40+ 个 TypeScript/TSX 源文件（src/ 目录）
-- 9 个测试文件（116 个测试用例）
+- 55+ 个 TypeScript/TSX 源文件（src/ 目录，含 workflow 模块）
+- 13 个测试文件（160 个测试用例）—— 新增 workflow 测试 45 个
 - 5 个 Agent 定义（.agents/ 目录）: main, coder, explore, reviewer, architect
 - Dashboard 组件: 7 个 .tsx 文件 + 1 个 .ts 类型文件 + 1 个 .ts 桥接文件
-- 新增: metrics.ts, esbuild.config.mjs, templates/
+- 新增: src/workflow/（5 个源文件 + 4 个测试文件），.workflows/（2 个示例 YAML）
+- 新增: ink-text-input v6（可选 peer 依赖，用于 Dashboard 文本输入）
 
 ## 模型 Provider
 - deepseek: DeepSeek V4-Pro / V4-Flash（Anthropic 兼容端点）
@@ -49,7 +50,7 @@
 - **committee**: explore + coder + reviewer + architect 并行执行
 - CLI: `-m <single|auto|committee>` 或 `-i` 交互选择
 
-## v0.6 进度（100% 完成）
+## v1.0 完成（DESIGN-v8）
 - ✅ esbuild 构建 + package.json 元数据 + LICENSE + templates
 - ✅ API 集成测试（13 测试）
 - ✅ AgentLoop 集成测试（11 测试）
@@ -58,13 +59,26 @@
 - ✅ validate 命令增强（ink/react/cheerio/git/Node.js/.env 检测）
 - ✅ Prometheus metrics（MetricsRegistry + /api/metrics 端点，8 测试）
 - ✅ 代码审查修复（12 项 bug：孤立 tool_result、时序安全、标签注入等）
-- 📋 v1.0 待做: Dockerfile、CI/CD、npm publish（init 命令已实现）
+- ✅ Dockerfile + CI/CD + npm publish 准备就绪
+- ✅ init 命令 — 一键脚手架生成
 
+## v2.0 Phase 1 完成 — 工作流引擎
+- ✅ 工作流类型定义 + YAML 解析 + Zod 校验（parser + parser.test.ts，13 测试）
+- ✅ WorkflowEngine：步骤遍历、条件分支、委员会步骤、检查点暂停/恢复（engine + engine.test.ts，13 测试）
+- ✅ 状态持久化（state-store + state-store.test.ts，11 测试）
+- ✅ 变量插值（template-resolver + template-resolver.test.ts，9 测试）
+- ✅ CLI命令：`workflow run/list/status/resume`
+- ✅ API 端点：`POST /api/workflows` / `GET /api/workflows/:id` / `POST /api/workflows/:id/resume`
+- ✅ 160 全量测试通过
+
+## 关键细节
 - AgentLoop.run() 支持 options.initialHistory 参数和 result.history 返回，用于多轮对话
-- EventBridge 新增 waitForUserAction()/resolveUserAction() 支持 Dashboard 继续对话
+- EventBridge 新增 waitForUserAction()/resolveUserAction()/waitForTask() 支持 Dashboard 继续对话
 - AgentResult.history 类型为 (Message | ToolResult)[]，不是 Message[]（因包含 tool_result）
 - 标准模式用 readline 交互菜单，Dashboard 模式用 ink 可选择菜单（上下箭头+回车+数字快捷键）
 - committee 模式只有保存/退出，没有继续聊天（多 agent 并行无对话上下文可延续）
+- 后任务交互：/save /model /exit 斜杠命令（Claude Code 风格）
+- 执行模式：-m single/auto/committee，-i 交互选择
 
 ## 已知 Bug 和注意事项
 - `const IDLE` 声明顺序必须在 `let searchQueue` 之前（TDZ 问题）

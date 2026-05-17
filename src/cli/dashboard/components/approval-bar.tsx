@@ -6,7 +6,7 @@
 
 import React from "react";
 import { Box, Text } from "ink";
-import { summarizeToolArgs } from "../../ansi.js";
+import { summarizeToolArgs, truncate } from "../../ansi.js";
 import type { ApprovalRequest } from "../types.js";
 
 interface ApprovalBarProps {
@@ -20,12 +20,12 @@ export function ApprovalBar({ request, onApprove, onDeny }: ApprovalBarProps) {
     // No pending approval — show a minimal bottom border
     return (
       <Box>
-        <Text dimColor>{" Ready"}</Text>
+        <Text dimColor>{"  ◌  Agent running..."}</Text>
       </Box>
     );
   }
 
-  const argsSummary = summarizeToolArgs(request.toolName, request.args);
+  const argsSummary = truncate(summarizeToolArgs(request.toolName, request.args), 80);
 
   return (
     <Box flexDirection="column">

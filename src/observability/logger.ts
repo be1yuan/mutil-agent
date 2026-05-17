@@ -14,6 +14,7 @@ export function createAppLogger(config: ObservabilityConfig) {
     defaultMeta: { service: "multi-agent-orchestrator" },
     transports: [
       new transports.Console({
+        level: "warn",
         format: format.combine(
           format.colorize(),
           format.printf(({ level, message, timestamp, ...meta }) => {

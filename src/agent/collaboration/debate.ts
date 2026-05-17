@@ -73,7 +73,8 @@ export class Debate {
         1,
         round1.responses,
         config.judgeAgentType,
-        task
+        task,
+        config.customJudgePrompt
       );
     }
     rounds.push(round1);
@@ -94,7 +95,8 @@ export class Debate {
           r,
           roundResult.responses,
           config.judgeAgentType,
-          task
+          task,
+          config.customJudgePrompt
         );
       }
       rounds.push(roundResult);
@@ -230,23 +232,19 @@ export class Debate {
     round: number,
     responses: Array<{ agentType: string; content: string }>,
     judgeAgentType: string,
-    topic: string
+    topic: string,
+    customJudgePrompt?: string
   ): Promise<DebateParticipantScore[]> {
     const logger = getLogger();
 
     const judgeDef = this.deps.loadAgentDefinition(judgeAgentType);
 
-    const critiqueDimension =
-      round > 1
-        ? "5. 批判性(critique): 对其他观点的批判性审视质量"
-        : "";
-
     const responsesText = responses
       .map((r) => `参与者 ${r.agentType}:\n${r.content}`)
       .join("\n\n");
 
-    const judgePrompt = JUDGE_PROMPT
-      .replace("{critiqueDimension}", critiqueDimension)
+    const judgePrompt = (customJudgePrompt ?? JUDGE_PROMPT)
+      .replace("{critiqueDimension}", round > 1 ? "5. 批判性(critique): 对其他观点的批判性审视质量" : "")
       .replace("{topic}", topic)
       .replace("{responses}", responsesText);
 

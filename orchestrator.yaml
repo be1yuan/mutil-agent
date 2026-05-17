@@ -9,13 +9,24 @@ providers:
     nativeSearch: true
   zhipu:
     apiKey: ${ZHIPU_API_KEY}
-    baseURL: https://open.bigmodel.cn/api/anthropic
+    baseURL: https://open.bigmodel.cn/api//sa
     defaultModel: glm-4.7
   mimo:
     apiKey: ${MIMO_API_KEY}
     baseURL: https://api.xiaomimimo.com/anthropic
     defaultModel: MiMo-V2.5-Pro
     nativeSearch: true
+  kimi:
+    apiKey: ${KIMI_API_KEY}
+    baseURL: https://dashscope.aliyuncs.com/compatible-mode/v1
+    defaultModel: kimi-k2.6
+    nativeSearch: true
+  qwen:
+    apiKey: ${QWEN_API_KEY}
+    baseURL: https://dashscope.aliyuncs.com/compatible-mode/v1
+    defaultModel: qwen3.6-max-preview
+    nativeSearch: true
+
 
 fallback:
   maxRetries: 3

@@ -6,10 +6,11 @@
  */
 
 import type { AgentResult, ModelProvider } from "../types/core.js";
+import type { DebateConfig, ReviewChainConfig } from "../agent/collaboration/types.js";
 
 // ── Step types ──
 
-export type StepType = "agent" | "committee" | "checkpoint";
+export type StepType = "agent" | "committee" | "checkpoint" | "debate" | "review-chain";
 
 export interface WorkflowCondition {
   field: "status" | "content" | "cost";
@@ -29,6 +30,8 @@ export interface WorkflowStep {
   budget?: number;             // per-step budget cap (yuan)
   timeout?: number;            // per-step timeout (ms)
   strategy?: string;           // committee aggregation strategy
+  debateConfig?: DebateConfig;  // type=debate
+  reviewChainConfig?: ReviewChainConfig; // type=review-chain
   on?: {
     condition: WorkflowCondition;
     then: string;              // next step id on match

@@ -5,27 +5,24 @@
 
 import React from "react";
 import { Box, Text } from "ink";
+import { getBudgetColor, components } from "../theme.js";
 
 interface CostGaugeProps {
   spent: number;
   budget: number;
   provider?: string;
+  currentStep?: number;
 }
 
-export function CostGauge({ spent, budget, provider }: CostGaugeProps) {
+export function CostGauge({ spent, budget, provider, currentStep }: CostGaugeProps) {
+  const { barWidth, barChar, emptyChar } = components.gauge;
   const ratio = budget > 0 ? spent / budget : 0;
   const clamped = Math.max(0, Math.min(1, ratio));
-  const width = 16;
-  const filled = Math.round(clamped * width);
-  const empty = width - filled;
-  const bar = "█".repeat(filled) + "░".repeat(empty);
+  const filled = Math.round(clamped * barWidth);
+  const empty = barWidth - filled;
+  const bar = barChar.repeat(filled) + emptyChar.repeat(empty);
   const pct = (clamped * 100).toFixed(1);
-
-  // Color based on budget usage
-  let barColor: string;
-  if (clamped > 0.8) barColor = "red";
-  else if (clamped > 0.5) barColor = "yellow";
-  else barColor = "green";
+  const barColor = getBudgetColor(clamped);
 
   return (
     <Box flexDirection="column" width="50%" paddingLeft={1}>
@@ -39,6 +36,11 @@ export function CostGauge({ spent, budget, provider }: CostGaugeProps) {
         <Text color={barColor}>[{bar}]</Text>
         {" "}{pct}%
       </Text>
+      {currentStep && currentStep > 0 && spent > 0 ? (
+        <Text dimColor>
+          {" ~¥"}{(spent / currentStep).toFixed(4)}{"/step"}
+        </Text>
+      ) : null}
       {provider ? (
         <Text dimColor>
           {" Provider: "}{provider}

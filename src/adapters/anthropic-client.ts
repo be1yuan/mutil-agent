@@ -172,9 +172,9 @@ function createAnthropicClient(apiKey: string, baseURL: string): Anthropic {
   // over x-api-key, which causes 401 errors when ANTHROPIC_AUTH_TOKEN is set
   // to a different provider's key.
   delete process.env.ANTHROPIC_AUTH_TOKEN;
-  // Diagnostic: log masked API key to help debug auth issues
+  // Diagnostic: log masked API key at debug level for auth debugging
   const masked = apiKey.length > 10 ? apiKey.slice(0, 6) + "..." + apiKey.slice(-4) : "***";
-  console.log(`  [adapter] ${baseURL.split("/").slice(-2).join("/")} key=${masked}`);
+  getLogger().debug(`[adapter] ${baseURL.split("/").slice(-2).join("/")} key=${masked}`);
   return new Anthropic({ apiKey, baseURL });
 }
 

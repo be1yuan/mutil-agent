@@ -20,9 +20,9 @@ import type { AgentDefinition } from "../agent/types.js";
 import type { CostTracker } from "../observability/cost-tracker.js";
 import type { Mailbox } from "../agent/mailbox.js";
 import type { MetricsRegistry } from "../observability/metrics.js";
-import { TaskManager, type SubmitTaskRequest } from "./task-manager.js";
+import { TaskManager, type SubmitTaskRequest, type TaskStatus } from "./task-manager.js";
 import { AgentLoopDeps } from "../agent/agent-loop.js";
-import { initSSE } from "./sse.js";
+import { initSSE, GlobalSSEClientSet } from "./sse.js";
 import { getLogger } from "../observability/logger.js";
 import { WorkflowEngine, WorkflowStateStore, loadWorkflow } from "../workflow/index.js";
 import type { WorkflowDefinition } from "../workflow/index.js";
@@ -93,7 +93,8 @@ export class ApiServer {
     this.taskManager = new TaskManager(
       this.deps,
       this.agentDefinitions,
-      this.config.security.maxConcurrentAgents
+      this.config.security.maxConcurrentAgents,
+      this.config.api?.historyRetention ?? 500
     );
 
     // Initialize workflow engine if workflows config exists
@@ -543,6 +544,30 @@ export class ApiServer {
             completedAt: r.completedAt,
           })),
         });
+        return;
+      }
+
+      // ── Dashboard / History endpoints ──
+
+      // Global SSE stream for dashboard
+      if (path === "/api/dashboard/events" && method === "GET") {
+        initSSE(res);
+        GlobalSSEClientSet.add(res);
+        return;
+      }
+
+      // Task history
+      if (path === "/api/tasks/history" && method === "GET") {
+        if (!this.taskManager) {
+          this.json(res, 503, { error: "Task manager not initialized" });
+          return;
+        }
+        const rawLimit = url.searchParams.get("limit");
+        const limit = rawLimit ? Math.min(Math.max(parseInt(rawLimit, 10) || 50, 1), 200) : 50;
+        const statusParam = url.searchParams.get("status");
+        const status = statusParam as TaskStatus | undefined;
+        const tasks = this.taskManager.listCompleted(limit, status);
+        this.json(res, 200, { tasks, count: tasks.length });
         return;
       }
 
